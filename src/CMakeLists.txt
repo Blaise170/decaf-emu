@@ -1,60 +1,20 @@
 include_directories(".")
 
-set(SOURCE_FILES
-    config.cpp
-    debugcontrol.cpp
-    debugger.cpp
-    debugnet.cpp
-    elf.cpp
-    fuzztests.cpp
-    hardwaretests.cpp
-    loader.cpp
-    main.cpp
-    memory_translate.cpp
-    processor.cpp
-    system.cpp
-    )
-set(HEADER_FILES
-    config.h
-    debugcontrol.h
-    debugger.h
-    debugmsg.h
-    debugnet.h
-    elf.h
-    fuzztests.h
-    hardwaretests.h
-    hostlookup.h
-    kerneldata.h
-    kernelexport.h
-    kernelfunction.h
-    kernelmodule.h
-    loader.h
-    memory_translate.h
-    ppcinvokeargs.h
-    ppcinvoke.h
-    ppcinvokelog.h
-    ppcinvokeresult.h
-    ppctypes.h
-    processor.h
-    system.h
-    traceiter.h
-    types.h
-    usermodule.h
-    )
+add_subdirectory(common)
+add_subdirectory(libconfig)
+add_subdirectory(libcpu)
+add_subdirectory(libdecaf)
+add_subdirectory(libdebugui)
+add_subdirectory(libgfd)
+add_subdirectory(libgpu)
 
-add_subdirectory(cpu)
-add_subdirectory(filesystem)
-add_subdirectory(gpu)
-add_subdirectory(input)
-add_subdirectory(mem)
-add_subdirectory(modules)
-add_subdirectory(platform)
-add_subdirectory(utils)
+add_subdirectory(decaf-cli)
 
-add_executable(decaf-emu ${SOURCE_FILES} ${HEADER_FILES})
-target_link_libraries(decaf-emu cpu filesystem input mem modules gpu platform utils)
-target_link_libraries(decaf-emu z m ${ADDRLIB_LIBRARIES} ${ASMJIT_LIBRARIES} ${DOCOPT_LIBRARIES} ${GLBINDING_LIBRARIES} ${GLFW_LIBRARIES} ${PUGIXML_LIBRARIES} ${SDL2_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT} ${OPENGL_LIBRARIES})
-if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
-    target_link_libraries(decaf-emu X11)
-endif ()
-install(TARGETS decaf-emu RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}/bin")
+if(DECAF_SDL)
+    add_subdirectory(common-sdl)
+    add_subdirectory(decaf-sdl)
+endif()
+
+if(DECAF_QT)
+    add_subdirectory(decaf-qt)
+endif()

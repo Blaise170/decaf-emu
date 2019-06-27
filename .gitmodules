@@ -1,18 +1,12 @@
-[submodule "libraries/zlib"]
-	path = libraries/zlib
-	url = https://github.com/madler/zlib.git
 [submodule "libraries/pugixml"]
 	path = libraries/pugixml
 	url = https://github.com/zeux/pugixml.git
-[submodule "libraries/asmjit"]
-	path = libraries/asmjit
-	url = https://github.com/kobalicek/asmjit.git
-[submodule "libraries/docopt"]
-	path = libraries/docopt
-	url = https://github.com/docopt/docopt.cpp.git
+[submodule "libraries/libbinrec"]
+	path = libraries/libbinrec
+	url = https://github.com/decaf-emu/libbinrec.git
 [submodule "libraries/spdlog"]
 	path = libraries/spdlog
-	url = https://github.com/exjam/spdlog.git
+	url = https://github.com/gabime/spdlog.git
 [submodule "libraries/cereal"]
 	path = libraries/cereal
 	url = https://github.com/USCiLab/cereal.git
@@ -22,15 +16,33 @@
 [submodule "libraries/glbinding"]
 	path = libraries/glbinding
 	url = https://github.com/cginternals/glbinding.git
-[submodule "libraries/glfw"]
-	path = libraries/glfw
-	url = https://github.com/glfw/glfw.git
 [submodule "libraries/gsl-lite"]
 	path = libraries/gsl-lite
 	url = https://github.com/decaf-emu/gsl-lite.git
 [submodule "libraries/addrlib"]
 	path = libraries/addrlib
 	url = https://github.com/decaf-emu/addrlib.git
-[submodule "libraries/SDL-mirror"]
-	path = libraries/SDL-mirror
-	url = https://github.com/spurious/SDL-mirror.git
+[submodule "libraries/excmd"]
+	path = libraries/excmd
+	url = https://github.com/exjam/excmd
+[submodule "libraries/imgui"]
+	path = libraries/imgui
+	url = https://github.com/ocornut/imgui.git
+[submodule "libraries/fixed_point"]
+	path = libraries/fixed_point
+	url = https://github.com/johnmcfarlane/fixed_point
+[submodule "libraries/catch"]
+	path = libraries/catch
+	url = https://github.com/philsquared/Catch.git
+[submodule "libraries/cpptoml"]
+	path = libraries/cpptoml
+	url = https://github.com/skystrife/cpptoml.git
+[submodule "libraries/cpp-peglib"]
+	path = libraries/cpp-peglib
+	url = https://github.com/yhirose/cpp-peglib.git
+[submodule "libraries/fmt"]
+	path = libraries/fmt
+	url = https://github.com/fmtlib/fmt.git
+[submodule "libraries/glslang"]
+	path = libraries/glslang
+	url = https://github.com/KhronosGroup/glslang.git

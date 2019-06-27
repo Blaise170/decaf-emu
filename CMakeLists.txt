@@ -1,101 +1,219 @@
-cmake_minimum_required(VERSION 2.8.4)
-include(ExternalProject)
+cmake_minimum_required(VERSION 3.2)
 
 project(decaf-emu C CXX)
-option(DECAF_GLFW "Build with GLFW support" ON)
-option(DECAF_SDL "Build with SDL support" ON)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
 
-set(PUGIXML_DIR "libraries/pugixml")
-include_directories("${PUGIXML_DIR}/src")
-add_library(pugixml STATIC "${PUGIXML_DIR}/src/pugixml.cpp")
-set(PUGIXML_LIBRARIES pugixml)
+include(${CMAKE_BINARY_DIR}/conanbuildinfo.cmake OPTIONAL RESULT_VARIABLE USING_CONAN)
+if(USING_CONAN)
+    conan_basic_setup(NO_OUTPUT_DIRS)
+endif()
 
-set(ADDRLIB_DIR "libraries/addrlib")
-include_directories("${ADDRLIB_DIR}/include")
-include_directories("${ADDRLIB_DIR}/src")
-add_library(addrlib STATIC
-    "${ADDRLIB_DIR}/src/addrinterface.cpp"
-    "${ADDRLIB_DIR}/src/core/addrelemlib.cpp"
-    "${ADDRLIB_DIR}/src/core/addrlib.cpp"
-    "${ADDRLIB_DIR}/src/core/addrobject.cpp"
-    "${ADDRLIB_DIR}/src/r600/r600addrlib.cpp"
-    )
-set(ADDRLIB_LIBRARIES addrlib)
-
-set(DOCOPT_DIR "libraries/docopt")
-include_directories("${DOCOPT_DIR}")
-externalproject_add(docopt
-    SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${DOCOPT_DIR}"
-    CMAKE_CACHE_ARGS
-        -DCMAKE_C_COMPILER:string=${CMAKE_C_COMPILER}
-        -DCMAKE_C_FLAGS:string=${CMAKE_C_FLAGS}
-        -DCMAKE_CXX_COMPILER:string=${CMAKE_CXX_COMPILER}
-        -DCMAKE_CXX_FLAGS:string=${CMAKE_CXX_FLAGS}
-    INSTALL_COMMAND ""
-    )
-externalproject_get_property(docopt BINARY_DIR)
-set(DOCOPT_LIBRARIES "${BINARY_DIR}/${CMAKE_FIND_LIBRARY_PREFIXES}docopt_s.a")
-
-set(SPDLOG_DIR "libraries/spdlog")
-include_directories("${SPDLOG_DIR}/include")
-
-set(GSL_DIR "libraries/gsl-lite")
-include_directories("${GSL_DIR}/include")
-
-set(CEREAL_DIR "libraries/cereal")
-include_directories("${CEREAL_DIR}/include")
-
-set(ASMJIT_DIR "libraries/asmjit")
-include_directories("${ASMJIT_DIR}/src")
-externalproject_add(asmjit
-    SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${ASMJIT_DIR}"
-    CMAKE_CACHE_ARGS
-        -DCMAKE_C_COMPILER:string=${CMAKE_C_COMPILER}
-        -DCMAKE_C_FLAGS:string=${CMAKE_C_FLAGS}
-        -DCMAKE_CXX_COMPILER:string=${CMAKE_CXX_COMPILER}
-        -DCMAKE_CXX_FLAGS:string=${CMAKE_CXX_FLAGS}
-        -DASMJIT_STATIC:string=on
-    INSTALL_COMMAND ""
-    )
-externalproject_get_property(asmjit BINARY_DIR)
-set(ASMJIT_LIBRARIES "${BINARY_DIR}/${CMAKE_FIND_LIBRARY_PREFIXES}asmjit.a")
-
-set(GLBINDING_DIR "libraries/glbinding")
-include_directories("${GLBINDING_DIR}/source/glbinding/include")
-externalproject_add(glbinding
-    SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${GLBINDING_DIR}"
-    CMAKE_CACHE_ARGS
-        -DCMAKE_C_COMPILER:string=${CMAKE_C_COMPILER}
-        -DCMAKE_C_FLAGS:string=${CMAKE_C_FLAGS}
-        -DCMAKE_CXX_COMPILER:string=${CMAKE_CXX_COMPILER}
-        -DCMAKE_CXX_FLAGS:string=${CMAKE_CXX_FLAGS}
-        -DOPTION_BUILD_STATIC:string=on
-        -DOPTION_BUILD_TESTS:string=off
-    INSTALL_COMMAND ""
-    )
-externalproject_get_property(glbinding BINARY_DIR)
-set(GLBINDING_LIBRARIES "${BINARY_DIR}/${CMAKE_FIND_LIBRARY_PREFIXES}glbinding.a")
-
+find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
-find_package(OpenGL REQUIRED)
-find_package(PkgConfig REQUIRED)
+find_package(OpenSSL REQUIRED) # OpenSSL::SSL
+find_package(ZLIB REQUIRED) # ZLIB::ZLIB
 
-if (DECAF_SDL)
-    pkg_search_module(SDL2 REQUIRED sdl2)
-    include_directories(${SDL2_INCLUDE_DIRS})
+option(DECAF_BUILD_TESTS "Build tests" OFF)
+option(DECAF_BUILD_TOOLS "Build tools" OFF)
+option(DECAF_BUILD_WUT_TESTS "Build tests which rely on wut" OFF)
+option(DECAF_JIT_ALLOW_PROFILING "Build with JIT profiling support" OFF)
+option(DECAF_FFMPEG "Build with ffmpeg support" ON)
+option(DECAF_GL "Build with OpenGL rendering support" ON)
+option(DECAF_SDL "Build with SDL support" ON)
+option(DECAF_VALGRIND "Build with Valgrind support" OFF)
+option(DECAF_VULKAN "Build with Vulkan rendering support" ON)
+option(DECAF_QT "Build with Qt support" OFF)
+option(DECAF_ENABLE_LTCG "Build with LTCG on Windows" ON)
+
+set(DEVKITPPC $ENV{DEVKITPPC} CACHE STRING "Path to devkitPPC install")
+set(WUT_ROOT $ENV{WUT_ROOT} CACHE STRING "Path to wut install")
+
+if(DECAF_BUILD_WUT_TESTS AND (NOT DEVKITPPC OR NOT WUT_ROOT))
+    message(FATAL_ERROR "You must have defined DEVKITPPC and WUT_ROOT to build wut tests.")
+endif()
+
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/obj)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/obj)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/obj)
+
+# Setup install directories
+include(GNUInstallDirs)
+if(WIN32)
+    set(DECAF_INSTALL_BINDIR "${CMAKE_INSTALL_PREFIX}")
+    set(DECAF_INSTALL_DOCSDIR "${CMAKE_INSTALL_PREFIX}")
+    set(DECAF_INSTALL_RESOURCESDIR "${CMAKE_INSTALL_PREFIX}/resources")
+else()
+    set(DECAF_INSTALL_BINDIR "${CMAKE_INSTALL_BINDIR}")
+    set(DECAF_INSTALL_DOCSDIR "${CMAKE_INSTALL_DATAROOTDIR}/doc/${PROJECT_NAME}")
+    set(DECAF_INSTALL_RESOURCESDIR "${CMAKE_INSTALL_DATAROOTDIR}/${PROJECT_NAME}/resources")
+endif()
+
+if(DECAF_JIT_ALLOW_PROFILING)
+    add_definitions(-DDECAF_JIT_ALLOW_PROFILING)
+endif()
+
+if(DECAF_FFMPEG)
+    find_package(FFMPEG REQUIRED)
+    add_definitions(-DDECAF_FFMPEG)
+endif()
+
+if(DECAF_GL)
+    if(APPLE)
+        message(FATAL_ERROR "The OpenGL backend is not supported on macOS. Please use -DDECAF_GL=OFF to suppress this error.")
+    endif()
+
+    find_package(OpenGL REQUIRED)
+    add_definitions(-DDECAF_GL)
+endif()
+
+if(DECAF_SDL OR DECAF_QT)
+    # decaf-qt still uses SDL for input
+    find_package(SDL2 REQUIRED)
+endif()
+
+if(DECAF_SDL)
     add_definitions(-DDECAF_SDL)
 endif()
 
-if (DECAF_GLFW)
-    pkg_search_module(GLFW REQUIRED glfw3)
-    add_definitions(-DDECAF_GLFW)
+if(DECAF_VULKAN)
+    find_package(Vulkan 1.1.92.1 REQUIRED) # Vulkan_INCLUDE_DIRS and Vulkan_LIBRARIES
+    add_library(vulkan INTERFACE IMPORTED)
+    set_target_properties(vulkan PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES ${Vulkan_INCLUDE_DIRS}
+        INTERFACE_LINK_LIBRARIES ${Vulkan_LIBRARIES})
+
+    if(MSVC)
+        set_target_properties(vulkan PROPERTIES
+            INTERFACE_COMPILE_DEFINITIONS "VK_USE_PLATFORM_WIN32_KHR")
+    endif()
+
+    add_definitions(-DDECAF_VULKAN)
 endif()
 
-if (NOT MSVC)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
-    if (APPLE)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
+if(DECAF_VALGRIND)
+    add_definitions(-DDECAF_VALGRIND)
+endif()
+
+if(DECAF_QT)
+    find_package(Qt5Widgets REQUIRED)
+    find_package(Qt5Svg REQUIRED)
+    add_definitions(-DDECAF_QT)
+endif()
+
+if(MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++latest")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /FS")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /GA")
+
+    if(DECAF_ENABLE_LTCG)
+        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /GL")
+        set(CMAKE_STATIC_LINKER_FLAGS_RELEASE "${CMAKE_STATIC_LINKER_FLAGS_RELEASE} /LTCG")
+        set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /LTCG")
+        set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /LTCG")
+    endif()
+
+    add_definitions(-DNOMINMAX)
+    add_definitions(-DUNICODE -D_UNICODE)
+
+    # Disable warnings about using deprecated std::wstring_convert
+    add_definitions(-D_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
+
+    # Disable warnings generated by glbinding headers
+    add_definitions(-D_SILENCE_CXX17_ADAPTOR_TYPEDEFS_DEPRECATION_WARNING)
+else()
+    add_definitions(-DDECAF_USE_STDLAYOUT_BITFIELD)
+
+    if(APPLE)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++1z -stdlib=libc++ -D_DARWIN_C_SOURCE")
+        link_libraries(c++fs)
+    else()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
+        link_libraries(stdc++fs)
     endif()
 endif()
 
+# Macro to map filters to folder structure for MSVC projects
+macro(GroupSources curdir)
+    if(MSVC)
+        file(GLOB children RELATIVE ${PROJECT_SOURCE_DIR}/${curdir} ${PROJECT_SOURCE_DIR}/${curdir}/*)
+
+        foreach(child ${children})
+            if(IS_DIRECTORY ${PROJECT_SOURCE_DIR}/${curdir}/${child})
+                GroupSources(${curdir}/${child})
+            else()
+                string(REPLACE "/" "\\" groupname ${curdir})
+                source_group(${groupname} FILES ${PROJECT_SOURCE_DIR}/${curdir}/${child})
+            endif()
+        endforeach()
+    endif()
+endmacro()
+
+# Generate build information
+include(GetGitRevisionDescription)
+
+function(get_timestamp _var)
+    string(TIMESTAMP timestamp UTC)
+    set(${_var} "${timestamp}" PARENT_SCOPE)
+endfunction()
+
+get_git_head_revision(GIT_REF_SPEC GIT_REV)
+git_describe(GIT_DESC --always --long --dirty)
+git_branch_name(GIT_BRANCH)
+get_timestamp(BUILD_DATE)
+
+set(BUILD_VERSION "0")
+if ($ENV{CI})
+   if ($ENV{TRAVIS})
+      set(BUILD_TAG $ENV{TRAVIS_TAG})
+   elseif($ENV{APPVEYOR})
+      set(BUILD_TAG $ENV{APPVEYOR_REPO_TAG_NAME})
+   endif()
+
+   if (BUILD_TAG)
+      string(REGEX MATCH "${CMAKE_MATCH_1}-([0-9]+)" OUTVAR ${BUILD_TAG})
+      if (${CMAKE_MATCH_COUNT} GREATER 0)
+          set(BUILD_VERSION ${CMAKE_MATCH_1})
+      endif()
+   endif()
+endif()
+
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/decaf_buildinfo.h.in"
+               "${CMAKE_CURRENT_BINARY_DIR}/generated/decaf_buildinfo.h" @ONLY)
+include_directories("${CMAKE_CURRENT_BINARY_DIR}/generated")
+
+# cotire for build optimisation
+include(cotire)
+macro(enable_pch project_name)
+    set(IGNORED_PATHS "")
+    set(INCLUDED_PATHS "")
+
+    list(APPEND IGNORED_PATHS  "${CMAKE_SOURCE_DIR}")
+    list(APPEND IGNORED_PATHS  "${AVCODEC_INCLUDE_DIR}")
+    list(APPEND IGNORED_PATHS  "${AVFILTER_INCLUDE_DIR}")
+    list(APPEND IGNORED_PATHS  "${AVUTIL_INCLUDE_DIR}")
+    list(APPEND IGNORED_PATHS  "${SWSCALE_INCLUDE_DIR}")
+    list(APPEND INCLUDED_PATHS "${CMAKE_SOURCE_DIR}/libraries")
+    list(APPEND INCLUDED_PATHS "${CMAKE_SOURCE_DIR}/src/common")
+
+    set_target_properties(${project_name} PROPERTIES
+        COTIRE_ADD_UNITY_BUILD FALSE
+        COTIRE_PREFIX_HEADER_IGNORE_PATH "${IGNORED_PATHS}"
+        COTIRE_PREFIX_HEADER_INCLUDE_PATH "${INCLUDED_PATHS}")
+    cotire(${project_name})
+endmacro()
+
+# Build stuff!
+add_subdirectory("libraries")
 add_subdirectory("src")
+add_subdirectory("resources")
+
+if(DECAF_BUILD_TOOLS)
+    add_subdirectory("tools")
+endif()
+
+if(DECAF_BUILD_TESTS OR DECAF_BUILD_WUT_TESTS)
+    enable_testing()
+    add_subdirectory("tests")
+endif()
