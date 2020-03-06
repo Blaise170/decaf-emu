@@ -4,10 +4,10 @@
 #include "vfs_link_device.h"
 #include "vfs_virtual_device.h"
 
+#include <algorithm>
 #include <common/platform.h>
-#ifdef PLATFORM_WINDOWS
-#include <winerror.h>
-#endif
+#include <system_error>
+#include <vector>
 
 namespace vfs
 {
@@ -35,7 +35,7 @@ HostDevice::makeFolder(const User &user,
    }
 
    if (!checkWritePermission(user, path)) {
-      return Error::WritePermission;
+      return Error::Permission;
    }
 
    auto error = std::error_code { };
@@ -55,7 +55,7 @@ HostDevice::makeFolders(const User &user,
    }
 
    if (!checkWritePermission(user, path)) {
-      return Error::WritePermission;
+      return Error::Permission;
    }
 
    auto error = std::error_code { };
@@ -103,14 +103,46 @@ HostDevice::openDirectory(const User &user,
                           const Path &path)
 {
    if (!checkReadPermission(user, path)) {
-      return { Error::ReadPermission };
+      return { Error::Permission };
    }
 
    auto ec = std::error_code { };
    auto itr = std::filesystem::directory_iterator { makeHostPath(path), ec };
    if (!ec) {
+      // Iterate through the whole directory building up a list of entries
+      // alphabetically sorted by name to ensure same behaviour across platforms
+      auto listing = std::vector<Status> {};
+
+      for (auto &hostEntry : itr) {
+         auto currentEntry = Status { };
+         currentEntry.name = hostEntry.path().filename().string();
+
+         if (auto size = hostEntry.file_size(ec); !ec) {
+            currentEntry.size = size;
+            currentEntry.flags = Status::HasSize;
+         }
+
+         if (hostEntry.is_directory()) {
+            currentEntry.flags = Status::IsDirectory;
+         }
+
+         if (auto result = lookupPermissions(currentEntry.name); result) {
+            currentEntry.group = result->group;
+            currentEntry.owner = result->owner;
+            currentEntry.permission = result->permission;
+            currentEntry.flags = Status::HasPermissions;
+         }
+
+         listing.insert(
+            std::upper_bound(listing.begin(), listing.end(), currentEntry,
+               [](const Status &lhs, const Status &rhs) {
+                  return lhs.name < rhs.name;
+               }),
+            std::move(currentEntry));
+      }
+
       return { DirectoryIterator {
-         std::make_shared<HostDirectoryIterator>(this, std::move(itr)) } };
+         std::make_shared<HostDirectoryIterator>(this, std::move(listing)) } };
    }
 
    if (mVirtualDevice) {
@@ -156,13 +188,13 @@ HostDevice::openFile(const User &user,
    // Check file permissions
    if ((mode & FileHandle::Read) || (mode & FileHandle::Update)) {
       if (!checkReadPermission(user, path)) {
-         return { Error::ReadPermission };
+         return { Error::Permission };
       }
    }
 
    if ((mode & FileHandle::Write) || (mode & FileHandle::Update)) {
       if (!checkWritePermission(user, path)) {
-         return { Error::WritePermission };
+         return { Error::Permission };
       }
    }
 
@@ -199,7 +231,7 @@ HostDevice::remove(const User &user,
                    const Path &path)
 {
    if (!checkWritePermission(user, path)) {
-      return Error::WritePermission;
+      return Error::Permission;
    }
 
    auto ec = std::error_code { };
@@ -223,11 +255,11 @@ HostDevice::rename(const User &user,
                    const Path &dst)
 {
    if (!checkReadPermission(user, src)) {
-      return Error::ReadPermission;
+      return Error::Permission;
    }
 
    if (!checkWritePermission(user, dst)) {
-      return Error::WritePermission;
+      return Error::Permission;
    }
 
    auto ec = std::error_code { };
@@ -314,7 +346,7 @@ HostDevice::status(const User &user,
                    const Path &path)
 {
    if (!checkReadPermission(user, path)) {
-      return { Error::ReadPermission };
+      return { Error::Permission };
    }
 
    auto ec = std::error_code { };
@@ -468,23 +500,21 @@ HostDevice::translateError(const std::error_code &ec) const
       return Error::Success;
    }
 
-   if (ec.category() == std::system_category()) {
-      return translateError(std::system_error { ec });
-   }
-
-   return Error::GenericError;
-}
-
-Error
-HostDevice::translateError(const std::system_error &ec) const
-{
-#ifdef PLATFORM_WINDOWS
-   switch (ec.code().value()) {
-   case ERROR_FILE_NOT_FOUND:
-   case ERROR_PATH_NOT_FOUND:
+   if (ec == std::errc::no_such_file_or_directory) {
       return Error::NotFound;
+   } else if (ec == std::errc::file_exists) {
+      return Error::AlreadyExists;
+   } else if (ec == std::errc::is_a_directory) {
+      return Error::NotFile;
+   } else if (ec == std::errc::not_a_directory) {
+      return Error::NotDirectory;
+   } else if (ec == std::errc::operation_not_supported) {
+      return Error::OperationNotSupported;
+   } else if (ec == std::errc::permission_denied) {
+      return Error::Permission;
+   } else if (ec == std::errc::read_only_file_system) {
+      return Error::ReadOnly;
    }
-#endif
 
    return Error::GenericError;
 }

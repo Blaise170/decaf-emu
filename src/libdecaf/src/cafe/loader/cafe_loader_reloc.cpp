@@ -10,7 +10,9 @@
 #include "cafe_loader_utils.h"
 
 #include "cafe/libraries/cafe_hle.h"
+
 #include <libcpu/be2_struct.h>
+#include <libcpu/cpu_formatters.h>
 #include <libcpu/espresso/espresso_instructionset.h>
 #include <libcpu/espresso/espresso_spr.h>
 #include <zlib.h>
@@ -88,7 +90,7 @@ sFixupOneSymbolTable(virt_ptr<LOADED_RPL> rpl,
       auto targetSectionHeader = getSectionHeader(rpl, symbol->shndx);
       auto targetSectionOffset = symbol->value - targetSectionHeader->addr;
       if (!imports || imports[symbol->shndx].numExports == 0 || targetSectionOffset < 8) {
-         auto binding = symbol->info >> 4;
+         // auto binding = symbol->info >> 4;
          auto type = symbol->info & 0xf;
 
          // Not really sure what this is doing tbh
@@ -213,7 +215,7 @@ LiCpu_RelocAdd(bool isRpx,
       *virt_cast<uint32_t *>(target) = value;
       break;
    case rpl::R_PPC_GHS_REL16_HA:
-      *virt_cast<uint16_t *>(target) = static_cast<uint16_t>((value + 0x8000) >> 16);
+      *virt_cast<uint16_t *>(target) = static_cast<uint16_t>((relValue + 0x8000) >> 16);
       break;
    case rpl::R_PPC_GHS_REL16_HI:
       *virt_cast<uint16_t *>(target) = static_cast<uint16_t>(relValue >> 16);

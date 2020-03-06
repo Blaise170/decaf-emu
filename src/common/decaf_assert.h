@@ -13,9 +13,13 @@
       abort(); \
    }
 
-#define decaf_handle_warn_assert(x, e, m) \
+#define decaf_handle_warn_once_assert(x, e, m) \
    if (!(x)) { \
-      assertWarnFailed(__FILE__, __LINE__, e, m); \
+      static bool seen_this_error_before = false; \
+      if (!seen_this_error_before) { \
+         seen_this_error_before = true; \
+         assertWarnFailed(__FILE__, __LINE__, e, m); \
+      } \
    }
 
 #define decaf_host_fault(f, t) \
@@ -28,17 +32,21 @@
 #define decaf_handle_assert(x, e, m) \
    if (UNLIKELY(!(x))) { \
       assertFailed(__FILE__, __LINE__, e, m); \
-      __builtin_trap(); \
+      abort(); \
    }
 
-#define decaf_handle_warn_assert(x, e, m) \
+#define decaf_handle_warn_once_assert(x, e, m) \
    if (UNLIKELY(!(x))) { \
-      assertWarnFailed(__FILE__, __LINE__, e, m); \
+      static bool seen_this_error_before = false; \
+      if (!seen_this_error_before) { \
+         seen_this_error_before = true; \
+         assertWarnFailed(__FILE__, __LINE__, e, m); \
+      } \
    }
 
 #define decaf_host_fault(f, t) \
    hostFaultWithStackTrace(f, t); \
-   __builtin_trap();
+   abort();
 
 #endif
 
@@ -48,8 +56,8 @@
 #define decaf_check(x) \
    decaf_handle_assert(x, #x, "")
 
-#define decaf_check_warn(x) \
-   decaf_handle_warn_assert(x, #x, "")
+#define decaf_check_warn_once(x) \
+   decaf_handle_warn_once_assert(x, #x, "")
 
 #define decaf_abort(m) \
    decaf_handle_assert(false, "0", m)

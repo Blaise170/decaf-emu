@@ -385,7 +385,7 @@ coreinit__OSCreateThreadType(virt_ptr<OSThread> thread,
 void
 OSDetachThread(virt_ptr<OSThread> thread);
 
-void
+[[noreturn]] void
 OSExitThread(int value);
 
 void
@@ -484,7 +484,7 @@ OSSleepThread(virt_ptr<OSThreadQueue> queue);
 void
 OSSleepTicks(OSTime ticks);
 
-uint32_t
+int32_t
 OSSuspendThread(virt_ptr<OSThread> thread);
 
 void

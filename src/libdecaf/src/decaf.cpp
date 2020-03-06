@@ -18,12 +18,13 @@
 
 #include <chrono>
 #include <common/decaf_assert.h>
+#include <common/log.h>
 #include <common/platform.h>
 #include <common/platform_dir.h>
 #include <condition_variable>
 #include <curl/curl.h>
 #include <filesystem>
-#include <fmt/format.h>
+#include <fmt/core.h>
 #include <libcpu/cpu.h>
 #include <libcpu/mem.h>
 #include <mutex>
@@ -197,9 +198,9 @@ start()
 }
 
 bool
-hasExited()
+stopping()
 {
-   return cafe::kernel::hasExited();
+   return cafe::kernel::stopping();
 }
 
 int

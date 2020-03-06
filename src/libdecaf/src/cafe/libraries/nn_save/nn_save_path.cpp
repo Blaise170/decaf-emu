@@ -6,11 +6,12 @@
 #include "cafe/libraries/coreinit/coreinit_mutex.h"
 #include "cafe/libraries/coreinit/coreinit_systeminfo.h"
 #include "cafe/libraries/coreinit/coreinit_osreport.h"
-#include "cafe/libraries/nn_act/nn_act_lib.h"
+#include "cafe/libraries/nn_act/nn_act_client.h"
+#include "cafe/libraries/nn_act/nn_act_clientstandardservice.h"
 #include "cafe/libraries/nn_acp/nn_acp_client.h"
 #include "cafe/libraries/nn_acp/nn_acp_saveservice.h"
 
-#include <fmt/format.h>
+#include <fmt/core.h>
 
 using namespace cafe::coreinit;
 using namespace nn::act;
@@ -25,7 +26,7 @@ struct StaticSaveData
    be2_struct<OSMutex> mutex;
    be2_struct<FSClient> fsClient;
    be2_struct<FSCmdBlock> fsCmdBlock;
-   be2_array<uint32_t, MaxSlot> persistentIdCache;
+   be2_array<uint32_t, NumSlots> persistentIdCache;
 };
 
 static virt_ptr<StaticSaveData> sSaveData = nullptr;
@@ -44,14 +45,14 @@ SAVEInit()
    FSAddClient(virt_addrof(sSaveData->fsClient), FSErrorFlag::None);
    FSInitCmdBlock(virt_addrof(sSaveData->fsCmdBlock));
 
-   for (auto i = SlotNo { 1 }; i <= MaxSlot; ++i) {
+   for (auto i = SlotNo { 1 }; i <= NumSlots; ++i) {
       sSaveData->persistentIdCache[i - 1] = nn_act::GetPersistentIdEx(i);
    }
 
    // Mount external storage if it is required
    if (OSGetUPID() == kernel::UniqueProcessId::Game) {
       auto externalStorageRequired = StackObject<int32_t> { };
-      if (nn_acp::ACPIsExternalStorageRequired(externalStorageRequired).ok() &&
+      if (nn_acp::ACPIsExternalStorageRequired(externalStorageRequired) == nn_acp::ACPResult::Success &&
           *externalStorageRequired) {
          nn_acp::ACPMountExternalStorage();
       }
@@ -108,7 +109,7 @@ SAVEGetSharedDataTitlePath(uint64_t titleID,
    auto externalStorageRequired = StackObject<int32_t> { };
    auto storage = "storage_mlc01";
 
-   if (nn_acp::ACPIsExternalStorageRequired(externalStorageRequired).ok()) {
+   if (nn_acp::ACPIsExternalStorageRequired(externalStorageRequired) == nn_acp::ACPResult::Success) {
       if (*externalStorageRequired) {
          storage = "storage_hfiomlc01";
       }
@@ -144,7 +145,7 @@ SAVEGetSharedSaveDataPath(uint64_t titleID,
    auto externalStorageRequired = StackObject<int32_t> { };
    auto storage = "storage_mlc01";
 
-   if (nn_acp::ACPIsExternalStorageRequired(externalStorageRequired).ok()) {
+   if (nn_acp::ACPIsExternalStorageRequired(externalStorageRequired) == nn_acp::ACPResult::Success) {
       if (*externalStorageRequired) {
          storage = "storage_hfiomlc01";
       }
@@ -155,7 +156,7 @@ SAVEGetSharedSaveDataPath(uint64_t titleID,
    auto titleLo = static_cast<uint32_t>(titleID & 0xffffffff);
    auto titleHi = static_cast<uint32_t>(titleID >> 32);
    auto result = std::snprintf(buffer.get(), bufferSize,
-                               "/vol/%s/usr/save/%08x/%08x/content/%s",
+                               "/vol/%s/usr/save/%08x/%08x/user/common/%s",
                                storage, titleHi, titleLo, dir.get());
 
    if (result < 0 || static_cast<uint32_t>(result) >= bufferSize) {
@@ -170,15 +171,20 @@ namespace internal
 {
 
 SaveStatus
-translateResult(nn::Result result)
+translateResult(nn_acp::ACPResult result)
 {
-   if (result.ok()) {
+   // TODO: Reverse this completely
+   if (result == nn_acp::ACPResult::Success) {
       return SaveStatus::OK;
    }
 
-   if (result.code == 0xFFFFFE0C) {
+   if (result == nn_acp::ACPResult::NotFound ||
+       result == nn_acp::ACPResult::DirNotFound ||
+       result == nn_acp::ACPResult::FileNotFound){
       return SaveStatus::NotFound;
-   } else if (result.code == 0xFFFFFA23) {
+   }
+
+   if (result == nn_acp::ACPResult::DeviceFull) {
       return SaveStatus::StorageFull;
    }
 
@@ -192,7 +198,7 @@ getPersistentId(SlotNo slot,
    if (slot == SystemSlot) {
       outPersistentId = 0;
       return true;
-   } else if (slot >= 1 && slot <= MaxSlot) {
+   } else if (slot >= 1 && slot <= NumSlots) {
       outPersistentId = sSaveData->persistentIdCache[slot - 1];
       return true;
    }

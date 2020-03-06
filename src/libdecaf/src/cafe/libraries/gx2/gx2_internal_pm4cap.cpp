@@ -12,10 +12,11 @@
 #include <common/log.h>
 #include <common/platform_dir.h>
 #include <common/murmur3.h>
-#include <fmt/format.h>
+#include <fmt/core.h>
 #include <fstream>
 #include <gsl.h>
-#include <libgpu/gpu_tiling.h>
+#include <libcpu/cpu_formatters.h>
+#include <libgpu/gpu7_tiling.h>
 #include <libgpu/latte/latte_constants.h>
 #include <libgpu/latte/latte_formats.h>
 #include <libgpu/latte/latte_pm4.h>
@@ -154,15 +155,6 @@ public:
       // Not sure if we need to do something here...
    }
 
-   void
-   syncRegisters(const uint32_t *registers,
-                 uint32_t size)
-   {
-      decaf_check(mState == CaptureState::WaitStartNextFrame);
-      decaf_check(size == mRegisters.size());
-      std::memcpy(mRegisters.data(), registers, size * sizeof(uint32_t));
-   }
-
 private:
    void
    start()
@@ -236,6 +228,7 @@ private:
    void
    writePacket(CapturePacket &packet)
    {
+      packet.timestamp = mPacketTimestamp++;
       mOut.write(reinterpret_cast<const char *>(&packet), sizeof(CapturePacket));
    }
 
@@ -321,98 +314,6 @@ private:
    {
    }
 
-   ADDR_COMPUTE_SURFACE_INFO_OUTPUT
-   getSurfaceInfo(uint32_t pitch,
-                  uint32_t height,
-                  uint32_t depth,
-                  uint32_t aa,
-                  uint32_t level,
-                  bool isScanBuffer,
-                  bool isDepthBuffer,
-                  SQ_TEX_DIM dim,
-                  SQ_DATA_FORMAT format,
-                  SQ_TILE_MODE tileMode)
-   {
-      ADDR_COMPUTE_SURFACE_INFO_OUTPUT output;
-      auto hwFormat = format;
-      auto width = std::max<uint32_t>(1u, pitch >> level);
-      auto numSlices = 1u;
-
-      switch (dim) {
-      case SQ_TEX_DIM::DIM_1D:
-         height = 1;
-         numSlices = 1;
-         break;
-      case SQ_TEX_DIM::DIM_2D:
-         height = std::max<uint32_t>(1u, height >> level);
-         numSlices = 1;
-         break;
-      case SQ_TEX_DIM::DIM_3D:
-         height = std::max<uint32_t>(1u, height >> level);
-         numSlices = std::max<uint32_t>(1u, depth >> level);
-         break;
-      case SQ_TEX_DIM::DIM_CUBEMAP:
-         height = std::max<uint32_t>(1u, height >> level);
-         numSlices = std::max<uint32_t>(6u, depth);
-         break;
-      case SQ_TEX_DIM::DIM_1D_ARRAY:
-         height = 1;
-         numSlices = depth;
-         break;
-      case SQ_TEX_DIM::DIM_2D_ARRAY:
-         height = std::max<uint32_t>(1u, height >> level);
-         numSlices = depth;
-         break;
-      case SQ_TEX_DIM::DIM_2D_MSAA:
-         height = std::max<uint32_t>(1u, height >> level);
-         numSlices = 1;
-         break;
-      case SQ_TEX_DIM::DIM_2D_ARRAY_MSAA:
-         height = std::max<uint32_t>(1u, height >> level);
-         numSlices = depth;
-         break;
-      }
-
-      std::memset(&output, 0, sizeof(ADDR_COMPUTE_SURFACE_INFO_OUTPUT));
-      output.size = sizeof(ADDR_COMPUTE_SURFACE_INFO_OUTPUT);
-
-      ADDR_COMPUTE_SURFACE_INFO_INPUT input;
-      memset(&input, 0, sizeof(ADDR_COMPUTE_SURFACE_INFO_INPUT));
-      input.size = sizeof(ADDR_COMPUTE_SURFACE_INFO_INPUT);
-      input.tileMode = static_cast<AddrTileMode>(tileMode & 0xF);
-      input.format = static_cast<AddrFormat>(hwFormat);
-      input.bpp = getDataFormatBitsPerElement(format);
-      input.width = width;
-      input.height = height;
-      input.numSlices = numSlices;
-
-      input.numSamples = 1 << aa;
-      input.numFrags = input.numSamples;
-
-      input.slice = 0;
-      input.mipLevel = level;
-
-      if (dim == SQ_TEX_DIM::DIM_CUBEMAP) {
-         input.flags.cube = 1;
-      }
-
-      if (dim == SQ_TEX_DIM::DIM_3D) {
-         input.flags.volume = 1;
-      }
-
-      if (isDepthBuffer) {
-         input.flags.depth = 1;
-      }
-
-      if (isScanBuffer) {
-         input.flags.display = 1;
-      }
-
-      input.flags.inputBaseMap = (level == 0);
-      AddrComputeSurfaceInfo(gpu::getAddrLibHandle(), &input, &output);
-      return output;
-   }
-
    void
    trackSurface(phys_addr baseAddress,
                 uint32_t pitch,
@@ -432,16 +333,31 @@ private:
 
       // Adjust address for swizzling
       if (tileMode >= SQ_TILE_MODE::TILED_2D_THIN1) {
-         baseAddress &= ~(0x800 - 1);
+         baseAddress &= ~(0x800u - 1);
       } else {
-         baseAddress &= ~(0x100 - 1);
+         baseAddress &= ~(0x100u - 1);
       }
 
-      // Calculate size
-      auto info = getSurfaceInfo(pitch, height, depth, aa, level,
-                                 isDepthBuffer, isScanBuffer, dim, format,
-                                 tileMode);
+      auto desc = gpu7::tiling::SurfaceDescription{ };
+      desc.tileMode = static_cast<gpu7::tiling::TileMode>(tileMode);
+      desc.format = static_cast<gpu7::tiling::DataFormat>(format);
+      desc.bpp = getDataFormatBitsPerElement(format);
+      desc.numSamples = 1; // TODO: 1 << aa
+      desc.width = pitch;
+      desc.height = height;
+      desc.numSlices = depth;
+      desc.numLevels = 0;
+      desc.bankSwizzle = 0;
+      desc.pipeSwizzle = 0;
+      if (isDepthBuffer) {
+         desc.use |= gpu7::tiling::SurfaceUse::DepthBuffer;
+      }
+      if (isScanBuffer) {
+         desc.use |= gpu7::tiling::SurfaceUse::ScanBuffer;
+      }
+      desc.dim = static_cast<gpu7::tiling::SurfaceDim>(dim);
 
+      auto info = gpu7::tiling::computeSurfaceInfo(desc, 0);
       // TODO: Use align? info.baseAlign;
 
       // Track that badboy
@@ -464,10 +380,9 @@ private:
          return;
       }
 
-      auto format = static_cast<SQ_DATA_FORMAT>(cb_color_info.FORMAT());
-      auto tileMode = getArrayModeTileMode(cb_color_info.ARRAY_MODE());
-
       // Disabled for now, because it's a pointless upload
+      // auto format = static_cast<SQ_DATA_FORMAT>(cb_color_info.FORMAT());
+      // auto tileMode = getArrayModeTileMode(cb_color_info.ARRAY_MODE());
       // trackSurface(addr, pitch, height, 1, SQ_TEX_DIM::DIM_2D, format, tileMode);
    }
 
@@ -487,10 +402,9 @@ private:
          return;
       }
 
-      auto format = static_cast<SQ_DATA_FORMAT>(db_depth_info.FORMAT());
-      auto tileMode = getArrayModeTileMode(db_depth_info.ARRAY_MODE());
-
       // Disabled for now, because it's a pointless upload
+      // auto format = static_cast<SQ_DATA_FORMAT>(db_depth_info.FORMAT());
+      // auto tileMode = getArrayModeTileMode(db_depth_info.ARRAY_MODE());
       //trackSurface(addr, pitch, height, 1, SQ_TEX_DIM::DIM_2D, format, tileMode);
    }
 
@@ -618,7 +532,7 @@ private:
 
    void
    scanLoadRegisters(Register base,
-                     phys_ptr<uint32_t> src,
+                     uint32_t *src,
                      const gsl::span<std::pair<uint32_t, uint32_t>> &registers)
    {
       for (auto &range : registers) {
@@ -804,7 +718,8 @@ private:
       {
          auto data = read<LoadControlConst>(reader);
          scanLoadRegisters(Register::ConfigRegisterBase,
-                           phys_cast<uint32_t *>(data.addr), data.values);
+                           phys_cast<uint32_t *>(data.addr).getRawPointer(),
+                           data.values);
          trackMemory(CaptureMemoryLoad::ShadowState, data.addr, 0xB00 * 4);
          break;
       }
@@ -812,7 +727,8 @@ private:
       {
          auto data = read<LoadControlConst>(reader);
          scanLoadRegisters(Register::ContextRegisterBase,
-                           phys_cast<uint32_t *>(data.addr), data.values);
+                           phys_cast<uint32_t *>(data.addr).getRawPointer(),
+                           data.values);
          trackMemory(CaptureMemoryLoad::ShadowState, data.addr, 0x400 * 4);
          break;
       }
@@ -820,7 +736,8 @@ private:
       {
          auto data = read<LoadControlConst>(reader);
          scanLoadRegisters(Register::AluConstRegisterBase,
-                           phys_cast<uint32_t *>(data.addr), data.values);
+                           phys_cast<uint32_t *>(data.addr).getRawPointer(),
+                           data.values);
          trackMemory(CaptureMemoryLoad::ShadowState, data.addr, 0x800 * 4);
          break;
       }
@@ -829,14 +746,16 @@ private:
          decaf_abort("Unsupported LOAD_BOOL_CONST");
          auto data = read<LoadControlConst>(reader);
          scanLoadRegisters(Register::BoolConstRegisterBase,
-                           phys_cast<uint32_t *>(data.addr), data.values);
+                           phys_cast<uint32_t *>(data.addr).getRawPointer(),
+                           data.values);
          break;
       }
       case IT_OPCODE::LOAD_LOOP_CONST:
       {
          auto data = read<LoadControlConst>(reader);
          scanLoadRegisters(Register::LoopConstRegisterBase,
-                           phys_cast<uint32_t *>(data.addr), data.values);
+                           phys_cast<uint32_t *>(data.addr).getRawPointer(),
+                           data.values);
          trackMemory(CaptureMemoryLoad::ShadowState, data.addr, 0x60 * 4);
          break;
       }
@@ -844,7 +763,8 @@ private:
       {
          auto data = read<LoadControlConst>(reader);
          scanLoadRegisters(Register::ResourceRegisterBase,
-                           phys_cast<uint32_t *>(data.addr), data.values);
+                           phys_cast<uint32_t *>(data.addr).getRawPointer(),
+                           data.values);
          trackMemory(CaptureMemoryLoad::ShadowState, data.addr, 0xD9E * 4);
          break;
       }
@@ -852,7 +772,8 @@ private:
       {
          auto data = read<LoadControlConst>(reader);
          scanLoadRegisters(Register::SamplerRegisterBase,
-                           phys_cast<uint32_t *>(data.addr), data.values);
+                           phys_cast<uint32_t *>(data.addr).getRawPointer(),
+                           data.values);
          trackMemory(CaptureMemoryLoad::ShadowState, data.addr, 0xA2 * 4);
          break;
       }
@@ -861,7 +782,8 @@ private:
          decaf_abort("Unsupported LOAD_CTL_CONST");
          auto data = read<LoadControlConst>(reader);
          scanLoadRegisters(Register::ControlRegisterBase,
-                           phys_cast<uint32_t *>(data.addr), data.values);
+                           phys_cast<uint32_t *>(data.addr).getRawPointer(),
+                           data.values);
          break;
       }
       case IT_OPCODE::INDIRECT_BUFFER:
@@ -969,6 +891,7 @@ private:
    std::array<uint32_t, 0x10000> mRegisters;
    size_t mCapturedFrames = 0;
    size_t mCaptureNumFrames = 0;
+   uint64_t mPacketTimestamp = 0ull;
 };
 
 static Recorder
@@ -1021,10 +944,6 @@ captureState()
 void
 captureSwap()
 {
-   if (captureState() == CaptureState::WaitStartNextFrame) {
-      internal::writePM4(DecafCapSyncRegisters {});
-   }
-
    if (captureState() != CaptureState::Disabled) {
       gx2::GX2DrawDone();
       gRecorder.swap();
@@ -1059,13 +978,6 @@ captureGpuFlush(phys_addr address,
        captureState() == CaptureState::WaitEndNextFrame) {
       gRecorder.gpuFlush(address, size);
    }
-}
-
-void
-captureSyncGpuRegisters(const uint32_t *registers,
-                        uint32_t size)
-{
-   gRecorder.syncRegisters(registers, size);
 }
 
 } // namespace cafe::gx2::internal

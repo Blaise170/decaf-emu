@@ -30,7 +30,64 @@ static FSAHandle sCurrentLoadFileHandle = { };
 static size_t sCurrentLoadFileSize = 0u;
 
 MCPError
-mcpGetFileLength(phys_ptr<MCPRequestGetFileLength> request)
+mcpDeviceList(phys_ptr<const MCPRequestDeviceList> request,
+              phys_ptr<MCPDevice> deviceList,
+              uint32_t deviceListSizeBytes)
+{
+   auto deviceListCount = deviceListSizeBytes / sizeof(MCPDevice);
+   auto devicesAdded = 0;
+   auto config = decaf::config();
+   auto deviceId = 0u;
+
+   /*
+   Example device list from my console:
+   path                    type      fs  flags  index uid
+   /vol/storage_usb01,     usb,      wfs,  0xF,     1   7
+   /vol/storage_bt00,      bt,       "",   0x3,     0   6
+   /vol/storage_drh00,     drh,      "",   0x3,     0   5
+   /vol/storage_slccmpt01, slccmpt,  isfs, 0x7,     1   4
+   /vol/storage_slc01,     slc,      isfs, 0xF,     1   3
+   /vol/storage_sdcard01,  sdcard,   fat,  0x7,     1   2
+   /vol/storage_ramdisk01, ramdisk,  wfs,  0x7,     1   1
+   /vol/storage_mlc01,     mlc,      wfs,  0xF,     1   0
+
+   Only mlc/ramdisk/usb had unk0x08 set to some sort of 7 character unique
+   identifier looking string.
+   */
+
+   if (devicesAdded < deviceListCount &&
+       (request->flags & MCPDeviceFlags::Unk1) &&
+       !config->system.mlc_path.empty()) {
+      auto &device = deviceList[devicesAdded++];
+      std::memset(std::addressof(device), 0, sizeof(MCPDevice));
+
+      device.type = "mlc";
+      device.filesystem = "wfs";
+      device.flags = MCPDeviceFlags::Unk1 | MCPDeviceFlags::Unk2 | MCPDeviceFlags::Unk4 | MCPDeviceFlags::Unk8;
+      device.index = 1u;
+      device.path = "/vol/storage_mlc01";
+      device.uid = deviceId++;
+   }
+
+   if (devicesAdded < deviceListCount &&
+       (request->flags & MCPDeviceFlags::Unk1) &&
+       !config->system.slc_path.empty()) {
+      auto &device = deviceList[devicesAdded++];
+      std::memset(std::addressof(device), 0, sizeof(MCPDevice));
+
+      device.type = "slc";
+      device.filesystem = "isfs";
+      device.flags = MCPDeviceFlags::Unk1 | MCPDeviceFlags::Unk2 | MCPDeviceFlags::Unk4 | MCPDeviceFlags::Unk8;
+      device.index = 1u;
+      device.path = "/vol/storage_slc01";
+      device.uid = deviceId++;
+   }
+
+   return static_cast<MCPError>(devicesAdded);
+}
+
+MCPError
+mcpGetFileLength(phys_ptr<const MCPRequestGetFileLength> request)
 {
    auto path = std::string { };
    auto name = std::string_view { phys_addrof(request->name).get() };
@@ -65,7 +122,6 @@ mcpGetFileLength(phys_ptr<MCPRequestGetFileLength> request)
    }
 
    StackObject<FSAStat> stat;
-   auto fsaHandle = getFsaHandle();
    auto error = FSAGetInfoByQuery(getFsaHandle(),
                                   path,
                                   FSAQueryInfoType::Stat,
@@ -95,7 +151,7 @@ mcpGetTitleId(phys_ptr<kernel::ResourceRequest> resourceRequest,
 }
 
 MCPError
-mcpLoadFile(phys_ptr<MCPRequestLoadFile> request,
+mcpLoadFile(phys_ptr<const MCPRequestLoadFile> request,
             phys_ptr<void> outputBuffer,
             uint32_t outputBufferLength)
 {
@@ -124,7 +180,7 @@ mcpLoadFile(phys_ptr<MCPRequestLoadFile> request,
       path = fmt::format("/vol/code/{}", name);
       break;
    case MCPFileType::CafeOS:
-      path = fmt::format("/vol/storage_mlc01/sys/title/00050010/1000400A/code/{}", name);
+      path = fmt::format("/vol/system_slc/title/00050010/1000400A/code/{}", name);
       break;
    case MCPFileType::SharedDataCode:
       path = fmt::format("/vol/storage_mlc01/sys/title/0005001B/10042400/code/{}", name);
@@ -158,7 +214,6 @@ mcpLoadFile(phys_ptr<MCPRequestLoadFile> request,
       sCurrentLoadFilePath = path;
    }
 
-   auto bytesRead = uint32_t { 0 };
    auto error = FSAReadFileWithPos(fsaHandle,
                                    outputBuffer,
                                    1,
@@ -211,22 +266,25 @@ checkExistence(std::string_view path)
 }
 
 MCPError
-mcpPrepareTitle52(phys_ptr<MCPRequestPrepareTitle> request,
+mcpPrepareTitle52(phys_ptr<const MCPRequestPrepareTitle> request,
                   phys_ptr<MCPResponsePrepareTitle> response)
 {
    auto titleInfoBuffer = getPrepareTitleInfoBuffer();
    auto titleId = request->titleId;
-   auto groupId = GroupId { 0 };
    if (titleId == DefaultTitleId) {
       StackObject<MCPTitleAppXml> appXml;
       if (auto error = readTitleAppXml(appXml); error < MCPError::OK) {
-         auto titleInfoBuffer = getPrepareTitleInfoBuffer();
+         titleInfoBuffer = getPrepareTitleInfoBuffer();
          std::memset(titleInfoBuffer.get(), 0x0, sizeof(MCPPPrepareTitleInfo));
+         titleInfoBuffer->permissions[0].group = static_cast<uint32_t>(ResourcePermissionGroup::All);
+         titleInfoBuffer->permissions[0].mask = 0xFFFFFFFFFFFFFFFFull;
          return error;
       }
 
       titleInfoBuffer->titleId = appXml->title_id;
       titleInfoBuffer->groupId = appXml->group_id;
+
+      titleId = appXml->title_id;
    }
 
    // TODO: When we have title switching we will need to read the title id and
@@ -255,8 +313,7 @@ mcpPrepareTitle52(phys_ptr<MCPRequestPrepareTitle> request,
 
    // Try mount updates for the title
    auto titleIdLo = titleId & 0xFFFFFFFF;
-   auto titleUpdatePath = fmt::format("/vol/storage_mlc01/usr/title/0005000e/{:08x}",
-                                      (titleInfoBuffer->titleId & 0xFFFFFFFF));
+   auto titleUpdatePath = fmt::format("/vol/storage_mlc01/usr/title/0005000e/{:08x}", titleIdLo);
    if (checkExistence(titleUpdatePath)) {
       gLog->info("Title update found at {}", titleUpdatePath);
 
@@ -312,7 +369,7 @@ mcpPrepareTitle52(phys_ptr<MCPRequestPrepareTitle> request,
 }
 
 MCPError
-mcpSwitchTitle(phys_ptr<MCPRequestSwitchTitle> request)
+mcpSwitchTitle(phys_ptr<const MCPRequestSwitchTitle> request)
 {
    auto titleInfoBuffer = getPrepareTitleInfoBuffer();
    auto processId = static_cast<ProcessId>(ProcessId::COSKERNEL + request->cafeProcessId);
@@ -355,6 +412,30 @@ mcpSwitchTitle(phys_ptr<MCPRequestSwitchTitle> request)
    std::memset(titleInfoBuffer.get(),
                0xFF,
                sizeof(MCPPPrepareTitleInfo));
+   return MCPError::OK;
+}
+
+MCPError
+mcpUpdateCheckContext(phys_ptr<MCPResponseUpdateCheckContext> response)
+{
+   // TODO: Implement mcpUpdateCheckContext
+   std::memset(response.get(), 0, sizeof(MCPResponseUpdateCheckContext));
+   return MCPError::OK;
+}
+
+MCPError
+mcpUpdateCheckResume(phys_ptr<MCPResponseUpdateCheckResume> response)
+{
+   // TODO: Implement mcpUpdateCheckResume
+   std::memset(response.get(), 0, sizeof(MCPResponseUpdateCheckResume));
+   return MCPError::OK;
+}
+
+MCPError
+mcpUpdateGetProgress(phys_ptr<MCPResponseUpdateProgress> response)
+{
+   // TODO: Implement mcpUpdateGetProgress
+   std::memset(response.get(), 0, sizeof(MCPResponseUpdateProgress));
    return MCPError::OK;
 }
 

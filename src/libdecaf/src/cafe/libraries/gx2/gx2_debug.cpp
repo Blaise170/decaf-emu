@@ -18,6 +18,7 @@
 #include <common/log.h>
 #include <common/platform_dir.h>
 #include <fmt/format.h>
+#include <libcpu/cpu_formatters.h>
 #include <libcpu/mem.h>
 #include <libgpu/latte/latte_disassembler.h>
 #include <libgfd/gfd.h>
@@ -43,14 +44,6 @@ debugDumpData(const std::string &filename,
    auto file = std::ofstream { filename, std::ofstream::out | std::ofstream::binary };
    file.write(static_cast<const char *>(data.get()), size);
    file.close();
-}
-
-static void
-debugDumpData(std::ofstream &file,
-              virt_ptr<const void> data,
-              size_t size)
-{
-   file.write(reinterpret_cast<const char *>(data.get()), size);
 }
 
 void
@@ -140,15 +133,6 @@ addShader(gfd::GFDFile &file,
    gfd::GFDPixelShader gfdShader;
    gx2ToGFDPixelShader(shader.get(), gfdShader);
    file.pixelShaders.emplace_back(std::move(gfdShader));
-}
-
-static void
-addShader(gfd::GFDFile &file,
-          virt_ptr<const GX2GeometryShader> shader)
-{
-   gfd::GFDGeometryShader gfdShader;
-   gx2ToGFDGeometryShader(shader.get(), gfdShader);
-   file.geometryShaders.emplace_back(std::move(gfdShader));
 }
 
 static void

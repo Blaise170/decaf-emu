@@ -11,9 +11,12 @@
 #include "coreinit_internal_queue.h"
 #include "coreinit_internal_idlock.h"
 
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
+
+#include <libcpu/cpu_control.h>
 #include <array>
 #include <common/decaf_assert.h>
-#include <fmt/format.h>
+#include <fmt/core.h>
 
 namespace cafe::coreinit
 {
@@ -116,7 +119,7 @@ void
 OSCancelAlarms(uint32_t group)
 {
    internal::lockScheduler();
-   internal::acquireIdLock(sAlarmData->lock, -2);
+   internal::acquireIdLock(sAlarmData->lock, static_cast<uint32_t>(-2));
 
    for (auto &perCoreData : sAlarmData->perCoreData) {
       for (auto alarm = perCoreData.alarmQueue.head; alarm; ) {
@@ -136,7 +139,7 @@ OSCancelAlarms(uint32_t group)
       }
    }
 
-   internal::releaseIdLock(sAlarmData->lock, -2);
+   internal::releaseIdLock(sAlarmData->lock, static_cast<uint32_t>(-2));
    internal::rescheduleAllCoreNoLock();
    internal::unlockScheduler();
 }
@@ -477,10 +480,7 @@ handleAlarmInterrupt(virt_ptr<OSContext> context)
    auto queue = virt_addrof(coreAlarmData.alarmQueue);
    auto cbQueue = virt_addrof(coreAlarmData.callbackAlarmQueue);
    auto cbThreadQueue = virt_addrof(coreAlarmData.callbackThreadQueue);
-
    auto now = OSGetTime();
-   auto next = std::chrono::time_point<std::chrono::system_clock>::max();
-   bool callbacksNeeded = false;
 
    internal::lockScheduler();
    acquireIdLockWithCoreId(sAlarmData->lock);
@@ -546,7 +546,7 @@ initialiseAlarmThread()
                                 sAlarmCallbackThreadEntry,
                                 coreId,
                                 nullptr,
-                                virt_cast<uint32_t *>(virt_addrof(coreData.threadStack) + coreData.threadStack.size()),
+                                virt_cast<uint32_t *>(stack + coreData.threadStack.size()),
                                 coreData.threadStack.size(),
                                 1,
                                 static_cast<OSThreadAttributes>(1 << coreId),

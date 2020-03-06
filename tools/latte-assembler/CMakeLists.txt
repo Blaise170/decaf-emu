@@ -29,12 +29,12 @@ add_executable(latte-assembler ${SOURCE_FILES} ${HEADER_FILES} ${GRAMMAR_HEADER}
 target_link_libraries(latte-assembler
     common
     libgfd
-    libgpu
     excmd
-    peglib)
+    peglib
+    glslang)
 
 set_target_properties(latte-assembler PROPERTIES FOLDER tools)
-GroupSources(src)
-GroupSources(resources)
+GroupSources("Source Files" src)
+GroupSources("Resource Files" resources)
 
 install(TARGETS latte-assembler RUNTIME DESTINATION "${DECAF_INSTALL_BINDIR}")

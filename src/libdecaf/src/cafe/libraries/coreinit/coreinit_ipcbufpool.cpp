@@ -52,7 +52,7 @@ IPCBufPoolCreate(virt_ptr<void> buffer,
    // IPC messages should be 64 byte aligned
    messageSize = align_up(messageSize, 64);
 
-   auto alignedBuffer = align_up(buffer, 0x40);
+   auto alignedBuffer = align_up(buffer, 64);
    auto pool = virt_cast<IPCBufPool *>(alignedBuffer);
    pool->magic = IPCBufPool::MagicHeader;
    pool->buffer = buffer;
@@ -76,7 +76,7 @@ IPCBufPoolCreate(virt_ptr<void> buffer,
 
    auto messageIndex = virt_cast<virt_ptr<void> *>(virt_cast<uint8_t *>(alignedBuffer) + sizeof(IPCBufPool));
    auto messages = virt_cast<uint8_t *>(messageIndex) + messageIndexSize;
-   pool->messages = messageIndex;
+   pool->messages = messages;
    pool->messageIndexSize = messageIndexSize;
 
    // Initialise FIFO.
@@ -133,8 +133,8 @@ IPCBufPoolFree(virt_ptr<IPCBufPool> pool,
 
    if (index >= 0) {
       auto messages = virt_cast<uint8_t *>(pool->messages);
-      auto message = messages + index * pool->messageSize0x18;
-      internal::ipcBufPoolFifoPush(virt_addrof(pool->fifo), message);
+      auto ipcMessage = messages + index * pool->messageSize0x18;
+      internal::ipcBufPoolFifoPush(virt_addrof(pool->fifo), ipcMessage);
    } else {
       error = IOSError::Invalid;
    }

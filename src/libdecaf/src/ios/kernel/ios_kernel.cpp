@@ -3,6 +3,7 @@
 #include "ios_kernel_hardware.h"
 #include "ios_kernel_heap.h"
 #include "ios_kernel_ipc_thread.h"
+#include "ios_kernel_otp.h"
 #include "ios_kernel_process.h"
 #include "ios_kernel_resourcemanager.h"
 #include "ios_kernel_semaphore.h"
@@ -28,6 +29,7 @@
 #include "ios/ios_stackobject.h"
 
 #include <common/log.h>
+#include <libcpu/cpu_formatters.h>
 #include <functional>
 
 namespace ios::kernel
@@ -97,7 +99,7 @@ startProcesses(bool bootOnlyBSP)
          continue;
       }
 
-      auto stackPtr = allocProcessStatic(info.pid, info.stackSize);
+      auto stackPtr = allocProcessStatic(info.pid, info.stackSize, 0x10);
       auto error = IOS_CreateThread(info.entry,
                                     phys_cast<void *>(phys_addr { static_cast<uint32_t>(info.pid) }),
                                     phys_cast<uint8_t *>(stackPtr) + info.stackSize,
@@ -187,9 +189,9 @@ kernelEntryPoint(phys_ptr<void> context)
 
    // Set initial process caps
    internal::setSecurityLevel(SecurityLevel::Normal);
-   internal::setClientCapability(ProcessId::KERNEL, FeatureId { 0x7FFFFFFF }, -1);
-   internal::setClientCapability(ProcessId::MCP, FeatureId { 0x7FFFFFFF }, -1);
-   internal::setClientCapability(ProcessId::BSP, FeatureId { 0x7FFFFFFF }, -1);
+   internal::setClientCapability(ProcessId::KERNEL, FeatureId { 0x7FFFFFFF }, 0xFFFFFFFFu);
+   internal::setClientCapability(ProcessId::MCP, FeatureId { 0x7FFFFFFF }, 0xFFFFFFFFu);
+   internal::setClientCapability(ProcessId::BSP, FeatureId { 0x7FFFFFFF }, 0xFFFFFFFFu);
 
    for (auto i = +ProcessId::CRYPTO; i < NumIosProcess; ++i) {
       internal::setClientCapability(ProcessId { i }, FeatureId { 1 }, 0xF);
@@ -282,6 +284,8 @@ start()
    internal::initialiseStaticSemaphoreData();
    internal::initialiseStaticThreadData();
    internal::initialiseStaticTimerData();
+
+   internal::initialiseOtp();
 
    sData = allocProcessStatic<StaticKernelData>();
    sData->rootTimerMessage.command = RootThreadCommand::Timer;

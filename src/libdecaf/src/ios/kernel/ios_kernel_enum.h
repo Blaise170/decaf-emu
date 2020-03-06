@@ -65,6 +65,12 @@ FLAGS_BEG(MessageQueueFlags, uint8_t)
    FLAGS_VALUE(RegisteredEventHandler,    1)
 FLAGS_END(MessageQueueFlags)
 
+ENUM_BEG(OtpFieldIndex, uint32_t)
+   ENUM_VALUE(WiiBoot1Sha1Hash,           0x1)
+   ENUM_VALUE(WiiCommonKey,               0x5)
+   // TODO: Fill this out...
+ENUM_END(OtpFieldIndex)
+
 ENUM_BEG(RootThreadCommand, int32_t)
    ENUM_VALUE(Timer,                0x100)
    ENUM_VALUE(SysprotEvent,         0x101)
@@ -93,6 +99,7 @@ ENUM_BEG(ResourcePermissionGroup, int32_t)
    ENUM_VALUE(AC,                   20)
    ENUM_VALUE(NDM,                  21)
    ENUM_VALUE(NSEC,                 22)
+   ENUM_VALUE(PAD,                  1000)
    ENUM_VALUE(All,                  0x7FFFFFFF)
 ENUM_END(ResourcePermissionGroup)
 

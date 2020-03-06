@@ -2,11 +2,12 @@
 #include "config.h"
 #include "decafsdl.h"
 
-#include <common-sdl/decafsdl_opengl.h>
-#include <common-sdl/decafsdl_vulkan.h>
 #include <common/decaf_assert.h>
-#include <fmt/format.h>
-#include <libdebugui/debugui.h>
+#include <fmt/core.h>
+
+#include <libgpu/gpu_graphicsdriver.h>
+#include <SDL_syswm.h>
+#include <thread>
 
 static std::string
 sActiveGfx = "NOGFX";
@@ -20,7 +21,7 @@ DecafSDL::~DecafSDL()
 bool
 DecafSDL::initCore()
 {
-   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) != 0) {
+   if (SDL_Init(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) != 0) {
       gCliLog->error("Failed to initialize SDL: {}", SDL_GetError());
       return false;
    }
@@ -29,39 +30,63 @@ DecafSDL::initCore()
 }
 
 bool
-DecafSDL::initGlGraphics()
+DecafSDL::initGraphics()
 {
-#ifdef DECAF_GL
-   mGraphicsDriver = new DecafSDLOpenGL();
+   auto videoInitialised = false;
 
-   if (!mGraphicsDriver->initialise(WindowWidth, WindowHeight)) {
-      gCliLog->error("Failed to create GL graphics window");
+#ifdef SDL_VIDEO_DRIVER_X11
+   if (!videoInitialised) {
+      videoInitialised = SDL_VideoInit("x11") == 0;
+      if (!videoInitialised) {
+         gCliLog->error("Failed to initialize SDL Video with x11: {}", SDL_GetError());
+      }
+   }
+#endif
+
+#ifdef SDL_VIDEO_DRIVER_WAYLAND
+   if (!videoInitialised) {
+      videoInitialised = SDL_VideoInit("wayland") == 0;
+      if (!videoInitialised) {
+         gCliLog->error("Failed to initialize SDL Video with wayland: {}", SDL_GetError());
+      }
+   }
+#endif
+
+#ifdef SDL_VIDEO_DRIVER_COCOA
+   if (!videoInitialised) {
+      videoInitialised = SDL_VideoInit("cocoa") == 0;
+      if (!videoInitialised) {
+         gCliLog->error("Failed to initialize SDL Video with cocoa: {}", SDL_GetError());
+      }
+   }
+#endif
+
+   if (!videoInitialised) {
+      if (SDL_VideoInit(NULL) != 0) {
+         gCliLog->error("Failed to initialize SDL Video: {}", SDL_GetError());
+         return false;
+      }
+   }
+
+   gCliLog->info("Using SDL video driver {}", SDL_GetCurrentVideoDriver());
+
+   mGraphicsDriver = gpu::createGraphicsDriver();
+   if (!mGraphicsDriver) {
       return false;
    }
 
-   sActiveGfx = "GL";
-   return true;
-#else
-   decaf_abort("GL support was not included in this build");
-#endif
-}
-
-bool
-DecafSDL::initVulkanGraphics()
-{
-#ifdef DECAF_VULKAN
-   mGraphicsDriver = new DecafSDLVulkan();
-
-   if (!mGraphicsDriver->initialise(WindowWidth, WindowHeight)) {
-      gCliLog->error("Failed to create Vulkan graphics window");
-      return false;
+   switch (mGraphicsDriver->type()) {
+   case gpu::GraphicsDriverType::Vulkan:
+      sActiveGfx = "Vulkan";
+      break;
+   case gpu::GraphicsDriverType::Null:
+      sActiveGfx = "Null";
+      break;
+   default:
+      sActiveGfx = "Unknown";
    }
 
-   sActiveGfx = "Vulkan";
    return true;
-#else
-   decaf_abort("Vulkan support was not included in this build");
-#endif
 }
 
 bool
@@ -76,78 +101,16 @@ DecafSDL::initSound()
    return true;
 }
 
-static debugui::MouseButton
-translateMouseButton(int button)
+static Uint32
+windowTitleTimerCallback(Uint32 interval, void *param)
 {
-   switch (button) {
-   case SDL_BUTTON_LEFT:
-      return debugui::MouseButton::Left;
-   case SDL_BUTTON_RIGHT:
-      return debugui::MouseButton::Right;
-   case SDL_BUTTON_MIDDLE:
-      return debugui::MouseButton::Middle;
-   default:
-      return debugui::MouseButton::Unknown;
-   }
-}
-
-static debugui::KeyboardKey
-translateKeyCode(SDL_Keysym sym)
-{
-   switch (sym.sym) {
-   case SDLK_TAB:
-      return debugui::KeyboardKey::Tab;
-   case SDLK_LEFT:
-      return debugui::KeyboardKey::LeftArrow;
-   case SDLK_RIGHT:
-      return debugui::KeyboardKey::RightArrow;
-   case SDLK_UP:
-      return debugui::KeyboardKey::UpArrow;
-   case SDLK_DOWN:
-      return debugui::KeyboardKey::DownArrow;
-   case SDLK_PAGEUP:
-      return debugui::KeyboardKey::PageUp;
-   case SDLK_PAGEDOWN:
-      return debugui::KeyboardKey::PageDown;
-   case SDLK_HOME:
-      return debugui::KeyboardKey::Home;
-   case SDLK_END:
-      return debugui::KeyboardKey::End;
-   case SDLK_DELETE:
-      return debugui::KeyboardKey::Delete;
-   case SDLK_BACKSPACE:
-      return debugui::KeyboardKey::Backspace;
-   case SDLK_RETURN:
-      return debugui::KeyboardKey::Enter;
-   case SDLK_ESCAPE:
-      return debugui::KeyboardKey::Escape;
-   case SDLK_LCTRL:
-      return debugui::KeyboardKey::LeftControl;
-   case SDLK_RCTRL:
-      return debugui::KeyboardKey::RightControl;
-   case SDLK_LSHIFT:
-      return debugui::KeyboardKey::LeftShift;
-   case SDLK_RSHIFT:
-      return debugui::KeyboardKey::RightShift;
-   case SDLK_LALT:
-      return debugui::KeyboardKey::LeftAlt;
-   case SDLK_RALT:
-      return debugui::KeyboardKey::RightAlt;
-   case SDLK_LGUI:
-      return debugui::KeyboardKey::LeftSuper;
-   case SDLK_RGUI:
-      return debugui::KeyboardKey::RightSuper;
-   default:
-      if (sym.sym >= SDLK_a && sym.sym <= SDLK_z) {
-         auto id = (sym.sym - SDLK_a) + static_cast<int>(debugui::KeyboardKey::A);
-         return static_cast<debugui::KeyboardKey>(id);
-      } else if (sym.sym >= SDLK_F1 && sym.sym <= SDLK_F12) {
-         auto id = (sym.sym - SDLK_F1) + static_cast<int>(debugui::KeyboardKey::F1);
-         return static_cast<debugui::KeyboardKey>(id);
-      }
-
-      return debugui::KeyboardKey::Unknown;
-   }
+   auto event = SDL_Event { 0 };
+   event.type = static_cast<Uint32>(reinterpret_cast<uintptr_t>(param));
+   event.user.code = 0;
+   event.user.data1 = nullptr;
+   event.user.data2 = nullptr;
+   SDL_PushEvent(&event);
+   return interval;
 }
 
 bool
@@ -156,28 +119,67 @@ DecafSDL::run(const std::string &gamePath)
    auto shouldQuit = false;
 
    // Setup some basic window stuff
-   auto window = mGraphicsDriver->getWindow();
-   setWindowIcon(window);
+   mWindow =
+      SDL_CreateWindow("Decaf",
+                       SDL_WINDOWPOS_UNDEFINED,
+                       SDL_WINDOWPOS_UNDEFINED,
+                       WindowWidth, WindowHeight,
+                       SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE);
+   setWindowIcon(mWindow);
 
-   if (config::display::mode == config::display::Fullscreen) {
-      SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+   if (gpu::config()->display.screenMode == gpu::DisplaySettings::Fullscreen) {
+      SDL_SetWindowFullscreen(mWindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
+   }
+
+   mDecafEventId = SDL_RegisterEvents(2);
+   if (mDecafEventId != -1) {
+      mUpdateWindowTitleEventId = mDecafEventId + 1;
+      mWindowTitleTimerId = SDL_AddTimer(100, &windowTitleTimerCallback,
+         reinterpret_cast<void *>(static_cast<uintptr_t>(mUpdateWindowTitleEventId)));
    }
 
    // Setup graphics driver
-   auto graphicsDriver = mGraphicsDriver->getDecafDriver();
-   decaf::setGraphicsDriver(graphicsDriver);
+   auto wsi = gpu::WindowSystemInfo { };
+   auto sysWmInfo = SDL_SysWMinfo { };
+   SDL_VERSION(&sysWmInfo.version);
+   if (!SDL_GetWindowWMInfo(mWindow, &sysWmInfo)) {
+      gCliLog->error("SDL_GetWindowWMInfo failed: {}", SDL_GetError());
+   }
 
-   // Setup debugui
-   auto debugUiRenderer = mGraphicsDriver->getDebugUiRenderer();
-   debugUiRenderer->setClipboardCallbacks(
-      []() -> const char *
-      {
-         return SDL_GetClipboardText();
-      },
-      [](const char *text)
-      {
-         SDL_SetClipboardText(text);
-      });
+   switch (sysWmInfo.subsystem) {
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+   case SDL_SYSWM_WINDOWS:
+      wsi.type = gpu::WindowSystemType::Windows;
+      wsi.renderSurface = static_cast<void *>(sysWmInfo.info.win.window);
+      break;
+#endif
+#ifdef SDL_VIDEO_DRIVER_X11
+   case SDL_SYSWM_X11:
+      wsi.type = gpu::WindowSystemType::X11;
+      wsi.renderSurface = reinterpret_cast<void *>(sysWmInfo.info.x11.window);
+      wsi.displayConnection = static_cast<void *>(sysWmInfo.info.x11.display);
+      break;
+#endif
+#ifdef SDL_VIDEO_METAL
+   case SDL_SYSWM_COCOA:
+      wsi.type = gpu::WindowSystemType::Cocoa;
+      wsi.renderSurface =  static_cast<void *>(SDL_Metal_CreateView(mWindow));
+      break;
+#endif
+#ifdef SDL_VIDEO_DRIVER_WAYLAND
+   case SDL_SYSWM_WAYLAND:
+      wsi.type = gpu::WindowSystemType::Wayland;
+      wsi.renderSurface = static_cast<void *>(sysWmInfo.info.wl.surface);
+      wsi.displayConnection = static_cast<void *>(sysWmInfo.info.wl.display);
+      break;
+#endif
+   default:
+      decaf_abort(fmt::format("Unsupported SDL window subsystem {}", sysWmInfo.subsystem));
+   }
+
+   mGraphicsDriver->setWindowSystemInfo(wsi);
+   mGraphicsThread = std::thread { [this]() { mGraphicsDriver->run(); } };
+   decaf::setGraphicsDriver(mGraphicsDriver);
 
    // Set input provider
    decaf::setInputDriver(this);
@@ -195,68 +197,56 @@ DecafSDL::run(const std::string &gamePath)
    // Start emulator
    decaf::start();
 
-   while (!shouldQuit && !decaf::hasExited()) {
-      if (mVpad0Controller) {
-         SDL_GameControllerUpdate();
-      }
-
-      SDL_Event event;
-
-      while (SDL_PollEvent(&event)) {
-         switch (event.type) {
-         case SDL_WINDOWEVENT:
-            if (event.window.event == SDL_WINDOWEVENT_CLOSE) {
-               shouldQuit = true;
-            } else if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-               mGraphicsDriver->windowResized();
-            }
-
-            break;
-         case SDL_MOUSEBUTTONDOWN:
-            debugUiRenderer->onMouseAction(translateMouseButton(event.button.button),
-                                           debugui::MouseAction::Press);
-            break;
-         case SDL_MOUSEBUTTONUP:
-            debugUiRenderer->onMouseAction(translateMouseButton(event.button.button),
-                                           debugui::MouseAction::Release);
-            break;
-         case SDL_MOUSEWHEEL:
-            debugUiRenderer->onMouseScroll(static_cast<float>(event.wheel.x),
-                                           static_cast<float>(event.wheel.y));
-            break;
-         case SDL_MOUSEMOTION:
-            debugUiRenderer->onMouseMove(static_cast<float>(event.motion.x),
-                                         static_cast<float>(event.motion.y));
-            break;
-         case SDL_KEYDOWN:
-            debugUiRenderer->onKeyAction(translateKeyCode(event.key.keysym),
-                                         debugui::KeyboardAction::Press);
-            break;
-         case SDL_KEYUP:
-            if (event.key.keysym.sym == SDLK_TAB) {
-               mToggleDRC = !mToggleDRC;
-            }
-
-            if (event.key.keysym.sym == SDLK_ESCAPE) {
-               shouldQuit = true;
-            }
-
-            debugUiRenderer->onKeyAction(translateKeyCode(event.key.keysym),
-                                         debugui::KeyboardAction::Release);
-            break;
-         case SDL_TEXTINPUT:
-            debugUiRenderer->onText(event.text.text);
-            break;
-         case SDL_QUIT:
+   auto event = SDL_Event { };
+   while (!shouldQuit && !decaf::stopping() && SDL_WaitEvent(&event)) {
+      switch (event.type) {
+      case SDL_WINDOWEVENT:
+         if (event.window.event == SDL_WINDOWEVENT_CLOSE) {
             shouldQuit = true;
-            break;
+         } else if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+            mGraphicsDriver->windowSizeChanged(event.window.data1, event.window.data2);
          }
+
+         break;
+      case SDL_KEYUP:
+         if (event.key.keysym.sym == SDLK_TAB) {
+            mToggleDRC = !mToggleDRC;
+         }
+
+         if (event.key.keysym.sym == SDLK_ESCAPE) {
+            shouldQuit = true;
+         }
+         break;
+      case SDL_QUIT:
+         shouldQuit = true;
+         break;
       }
 
-      if (mGameLoaded) {
-         Viewport tvViewport, drcViewport;
-         calculateScreenViewports(tvViewport, drcViewport);
-         mGraphicsDriver->renderFrame(tvViewport, drcViewport);
+      if (event.type == mDecafEventId) {
+         auto eventType = static_cast<decaf::EventType>(event.user.code);
+         if (eventType == decaf::EventType::GameLoaded) {
+            auto info = reinterpret_cast<decaf::GameInfo *>(event.user.data1);
+            mGameInfo = *info;
+            delete info;
+         }
+      } else if (event.type == mUpdateWindowTitleEventId) {
+         fmt::memory_buffer title;
+         fmt::format_to(title, "decaf-sdl -");
+
+         if (mGameInfo.titleId) {
+            fmt::format_to(title, " {:08X}-{:08X}",
+                           mGameInfo.titleId >> 32,
+                           mGameInfo.titleId & 0xFFFFFFFF);
+         }
+
+         if (!mGameInfo.executable.empty()) {
+            fmt::format_to(title, " {}", mGameInfo.executable);
+         }
+
+         fmt::format_to(title, " ({} {} fps)", sActiveGfx,
+                        static_cast<int>(mGraphicsDriver->getDebugInfo()->averageFps));
+         auto titleStr = std::string { title.data(), title.size() };
+         SDL_SetWindowTitle(mWindow, titleStr.c_str());
       }
    }
 
@@ -264,145 +254,20 @@ DecafSDL::run(const std::string &gamePath)
    decaf::shutdown();
 
    // Shut down graphics
-   mGraphicsDriver->shutdown();
+   mGraphicsDriver->stop();
+   mGraphicsThread.join();
 
    return true;
 }
 
 void
-DecafSDL::calculateScreenViewports(Viewport &tv, Viewport &drc)
-{
-   int TvWidth = 1280;
-   int TvHeight = 720;
-
-   int DrcWidth = 854;
-   int DrcHeight = 480;
-
-   int OuterBorder = 0;
-   int ScreenSeparation = 5;
-
-   int windowWidth, windowHeight;
-   int nativeHeight, nativeWidth;
-   int tvLeft, tvBottom, tvTop, tvRight;
-   int drcLeft, drcBottom, drcTop, drcRight;
-
-   auto tvVisible = true;
-   auto drcVisible = true;
-
-   mGraphicsDriver->getWindowSize(&windowWidth, &windowHeight);
-
-   if (config::display::layout == config::display::Toggle) {
-      // For toggle mode only one screen is visible at a time, so we calculate the
-      // screen position as if only the TV exists here
-      nativeHeight = TvHeight;
-      nativeWidth = TvWidth;
-      DrcWidth = 0;
-      DrcHeight = 0;
-      ScreenSeparation = 0;
-   } else {
-      nativeHeight = DrcHeight + TvHeight + ScreenSeparation + 2 * OuterBorder;
-      nativeWidth = std::max(DrcWidth, TvWidth) + 2 * OuterBorder;
-   }
-
-   if (windowWidth * nativeHeight >= windowHeight * nativeWidth) {
-      // Align to height
-      int drcBorder = (windowWidth * nativeHeight - windowHeight * DrcWidth + nativeHeight) / nativeHeight / 2;
-      int tvBorder = config::display::stretch ? 0 : (windowWidth * nativeHeight - windowHeight * TvWidth + nativeHeight) / nativeHeight / 2;
-
-      drcBottom = OuterBorder;
-      drcTop = OuterBorder + (DrcHeight * windowHeight + nativeHeight / 2) / nativeHeight;
-      drcLeft = drcBorder;
-      drcRight = windowWidth - drcBorder;
-
-      tvBottom = windowHeight - OuterBorder - (TvHeight * windowHeight + nativeHeight / 2) / nativeHeight;
-      tvTop = windowHeight - OuterBorder;
-      tvLeft = tvBorder;
-      tvRight = windowWidth - tvBorder;
-   } else {
-      // Align to width
-      int heightBorder = (windowHeight * nativeWidth - windowWidth * (DrcHeight + TvHeight + ScreenSeparation) + nativeWidth) / nativeWidth / 2;
-      int drcBorder = (windowWidth - DrcWidth * windowWidth / nativeWidth + 1) / 2;
-      int tvBorder = (windowWidth - TvWidth * windowWidth / nativeWidth + 1) / 2;
-
-      drcBottom = heightBorder;
-      drcTop = heightBorder + (DrcHeight * windowWidth + nativeWidth / 2) / nativeWidth;
-      drcLeft = drcBorder;
-      drcRight = windowWidth - drcBorder;
-
-      tvTop = windowHeight - heightBorder;
-      tvBottom = windowHeight - heightBorder - (TvHeight * windowWidth + nativeWidth / 2) / nativeWidth;
-      tvLeft = tvBorder;
-      tvRight = windowWidth - tvBorder;
-   }
-
-   if (config::display::layout == config::display::Toggle) {
-      // In toggle mode, DRC and TV size are the same
-      drcLeft = tvLeft;
-      drcRight = tvRight;
-      drcTop = tvTop;
-      drcBottom = tvBottom;
-
-      if (mToggleDRC) {
-         drcVisible = true;
-         tvVisible = false;
-      } else {
-         drcVisible = false;
-         tvVisible = true;
-      }
-   }
-
-   if (drcVisible) {
-      drc.x = static_cast<float>(drcLeft);
-      drc.y = static_cast<float>(drcBottom);
-      drc.width = static_cast<float>(drcRight - drcLeft);
-      drc.height = static_cast<float>(drcTop - drcBottom);
-   } else {
-      drc.x = 0.0f;
-      drc.y = 0.0f;
-      drc.width = 0.0f;
-      drc.height = 0.0f;
-   }
-
-   if (tvVisible) {
-      tv.x = static_cast<float>(tvLeft);
-      tv.y = static_cast<float>(tvBottom);
-      tv.width = static_cast<float>(tvRight - tvLeft);
-      tv.height = static_cast<float>(tvTop - tvBottom);
-   } else {
-      tv.x = 0.0f;
-      tv.y = 0.0f;
-      tv.width = 0.0f;
-      tv.height = 0.0f;
-   }
-
-   decaf_check(drc.x >= 0);
-   decaf_check(drc.y >= 0);
-   decaf_check(drc.x + drc.width <= windowWidth);
-   decaf_check(drc.y + drc.height <= windowHeight);
-   decaf_check(tv.x >= 0);
-   decaf_check(tv.y >= 0);
-   decaf_check(tv.x + tv.width <= windowWidth);
-   decaf_check(tv.y + tv.height <= windowHeight);
-}
-
-void
 DecafSDL::onGameLoaded(const decaf::GameInfo &info)
 {
-   fmt::memory_buffer title;
-   fmt::format_to(title, "decaf-sdl ({})", sActiveGfx);
-
-   if (info.titleId) {
-      fmt::format_to(title, " {:016X}", info.titleId);
+   if (mDecafEventId != -1) {
+      auto event = SDL_Event { 0 };
+      event.type = mDecafEventId;
+      event.user.code = static_cast<Sint32>(decaf::EventType::GameLoaded);
+      event.user.data1 = new decaf::GameInfo(info);
+      SDL_PushEvent(&event);
    }
-
-   if (!info.executable.empty()) {
-      fmt::format_to(title, " {}", info.executable);
-   }
-
-   auto titleStr = std::string { title.data(), title.size() };
-   SDL_SetWindowTitle(mGraphicsDriver->getWindow(), titleStr.c_str());
-
-   // We have to be careful not to start rendering until the game is
-   // fully loaded, or we will block window messaging.
-   mGameLoaded = true;
 }

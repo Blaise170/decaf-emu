@@ -6,9 +6,11 @@
 #include "cafe/libraries/coreinit/coreinit_thread.h"
 
 #include <common/log.h>
+#include <common/strutils.h>
 #include <decaf_buildinfo.h>
 #include <filesystem>
-#include <libcpu/cpu.h>
+#include <libcpu/cpu_control.h>
+#include <libcpu/cpu_formatters.h>
 #include <memory>
 #include <spdlog/async.h>
 #include <spdlog/sinks/basic_file_sink.h>
@@ -25,7 +27,7 @@ sLogSinks;
 class GlobalLogFormatter : public spdlog::formatter
 {
 public:
-   virtual void format(const spdlog::details::log_msg &msg, fmt::memory_buffer &dest) override
+   virtual void format(const spdlog::details::log_msg &msg, spdlog::memory_buf_t &dest) override
    {
       auto tm_time = spdlog::details::os::localtime(spdlog::log_clock::to_time_t(msg.time));
       auto duration = msg.time.time_since_epoch();
@@ -33,7 +35,7 @@ public:
 
       fmt::format_to(dest, "[{:02}:{:02}:{:02}.{:06} {}:",
                      tm_time.tm_hour, tm_time.tm_min, tm_time.tm_sec, micros,
-                     spdlog::level::to_c_str(msg.level));
+                     spdlog::level::to_string_view(msg.level));
 
       auto core = cpu::this_core::state();
       if (core) {
@@ -43,14 +45,14 @@ public:
          } else {
             fmt::format_to(dest, "p{:01X} t{:02X}", core->id, 0xFF);
          }
-      } else if (msg.logger_name) {
-         fmt::format_to(dest, "{}", *msg.logger_name);
+      } else if (msg.logger_name.size()) {
+         fmt::format_to(dest, "{}", msg.logger_name);
       } else {
          fmt::format_to(dest, "h{}", msg.thread_id);
       }
 
       fmt::format_to(dest, "] {}{}",
-                     std::string_view { msg.raw.data(), msg.raw.size() },
+                     std::string_view { msg.payload.data(), msg.payload.size() },
                      spdlog::details::os::default_eol);
    }
 
@@ -90,7 +92,16 @@ initialiseLogSinks(std::string_view filename)
       []() {
          decaf::registerConfigChangeListener(
             [](const decaf::Settings &settings) {
-               setLogLevel(spdlog::level::from_str(settings.log.level));
+               auto defaultLevel = spdlog::level::from_str(settings.log.level);
+               spdlog::apply_all([&](std::shared_ptr<spdlog::logger> logger) {
+                  auto level = defaultLevel;
+                  for (auto &item : settings.log.levels) {
+                     if (iequals(item.first, logger->name())) {
+                        level = spdlog::level::from_str(item.second);
+                     }
+                  }
+                  logger->set_level(level);
+               });
             });
       });
 }
@@ -132,10 +143,11 @@ std::shared_ptr<spdlog::logger>
 makeLogger(std::string name,
            std::vector<spdlog::sink_ptr> sinks)
 {
+   auto config = decaf::config();
    auto logger = std::shared_ptr<spdlog::logger> { };
    sinks.insert(sinks.end(), sLogSinks.begin(), sLogSinks.end());
 
-   if (decaf::config()->log.async) {
+   if (config->log.async) {
       logger = std::make_shared<spdlog::async_logger>(name,
                                                       std::begin(sinks),
                                                       std::end(sinks),
@@ -147,20 +159,17 @@ makeLogger(std::string name,
       logger->flush_on(spdlog::level::trace);
    }
 
-   auto logLevel = spdlog::level::from_str(decaf::config()->log.level);
-   logger->set_level(logLevel);
+   auto level = spdlog::level::from_str(config->log.level);
+   for (auto &item : config->log.levels) {
+      if (iequals(item.first, name)) {
+         level = spdlog::level::from_str(item.second);
+      }
+   }
+
+   logger->set_level(level);
    logger->set_formatter(std::make_unique<GlobalLogFormatter>());
    spdlog::register_logger(logger);
    return logger;
-}
-
-void
-setLogLevel(spdlog::level::level_enum level)
-{
-   spdlog::apply_all(
-      [=](std::shared_ptr<spdlog::logger> logger) {
-         logger->set_level(level);
-      });
 }
 
 } // namespace decaf

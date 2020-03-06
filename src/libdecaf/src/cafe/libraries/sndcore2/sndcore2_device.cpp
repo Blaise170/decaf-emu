@@ -5,6 +5,8 @@
 #include "sndcore2_voice.h"
 #include "decaf_sound.h"
 
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
+
 #include <array>
 #include <common/fixed.h>
 #include <libcpu/mmu.h>
@@ -13,7 +15,7 @@ namespace cafe::sndcore2
 {
 
 constexpr auto NumOutputSamples = 48000 * 3 / 1000;
-constexpr auto DefaultVolume = ufixed_1_15_t::from_data(0x8000);
+constexpr auto DefaultVolume = ufixed_1_15_t { 1.0 };
 
 struct AuxData
 {
@@ -118,7 +120,7 @@ struct AudioDecoder
       // Update prev sample
       auto sample = read();
       adpcm.prevSample[1] = adpcm.prevSample[0];
-      adpcm.prevSample[0] = sample.data();
+      adpcm.prevSample[0] = fixed_to_data(sample);
 
       if (offsets.currentOffsetAbs == offsets.endOffsetAbs) {
          // According to Dolphin, the loop back happens regardless
@@ -199,13 +201,13 @@ struct AudioDecoder
          auto clampedSample = std::min(std::max(adpcmSample, -32767), 32767);
 
          // Write to the output
-         return Pcm16Sample::from_data(clampedSample);
+         return fixed_from_data<Pcm16Sample>(static_cast<int16_t>(clampedSample));
       } else if (offsets.format == AXVoiceFormat::LPCM16) {
          auto data = getMemPageAddress<be2_val<int16_t>>(offsets.memPageNumber);
-         return Pcm16Sample::from_data(data[sampleIndex]);
+         return fixed_from_data<Pcm16Sample>(data[sampleIndex]);
       } else if (offsets.format == AXVoiceFormat::LPCM8) {
          auto data = getMemPageAddress<uint8_t>(offsets.memPageNumber);
-         return Pcm16Sample::from_data(data[sampleIndex] << 8);
+         return fixed_from_data<Pcm16Sample>(static_cast<int16_t>(data[sampleIndex] << 8));
       } else {
          decaf_abort("Unexpected AXVoice data format");
       }
@@ -217,13 +219,13 @@ sampleVoice(virt_ptr<AXVoice> voice,
             Pcm16Sample *samples,
             int numSamples)
 {
-   static const auto FpOne = ufixed1616_t(1);
-   static const auto FpZero = ufixed1616_t(0);
+   static const auto FpOne = ufixed_16_16_t(1);
+   static const auto FpZero = ufixed_16_16_t(0);
 
    memset(samples, 0, numSamples * sizeof(Pcm16Sample));
 
    auto extras = getVoiceExtras(voice->index);
-   auto offsetFrac = ufixed1616_t(extras->src.currentOffsetFrac.value());
+   auto offsetFrac = ufixed_16_16_t(extras->src.currentOffsetFrac.value());
 
    AudioDecoder decoder;
    decoder.fromVoice(extras);
@@ -248,7 +250,7 @@ sampleVoice(virt_ptr<AXVoice> voice,
       } else {
          auto thisSampleMul = FpOne - offsetFrac;
          auto lastSampleMul = offsetFrac;
-         auto lastSample = Pcm16Sample::from_data(extras->src.lastSample[0]);
+         auto lastSample = fixed_from_data<Pcm16Sample>(extras->src.lastSample[0]);
          samples[i] = sample * thisSampleMul + lastSample * lastSampleMul;
       }
 
@@ -264,7 +266,7 @@ sampleVoice(virt_ptr<AXVoice> voice,
          extras->src.lastSample[3] = extras->src.lastSample[2];
          extras->src.lastSample[2] = extras->src.lastSample[1];
          extras->src.lastSample[1] = extras->src.lastSample[0];
-         extras->src.lastSample[0] = sample.data();
+         extras->src.lastSample[0] = fixed_to_data(sample);
 
          // If we reached the end of the voice data, we should just leave
          if (decoder.eof()) {
@@ -290,7 +292,7 @@ sampleVoice(virt_ptr<AXVoice> voice,
 
    decoder.toVoice(extras);
 
-   extras->src.currentOffsetFrac = ufixed016_t { offsetFrac };
+   extras->src.currentOffsetFrac = ufixed_0_16_t { offsetFrac };
 }
 
 void
@@ -343,7 +345,8 @@ invokeAuxCallback(AuxData &aux, uint32_t numChannels, uint32_t numSamples, Pcm16
 
       for (auto ch = 0u; ch < numChannels; ++ch) {
          for (auto i = 0u; i < numSamples; ++i) {
-            samples[ch][i] = Pcm16Sample::from_data(sDeviceData->samples[ch][i]);
+            samples[ch][i] = fixed_from_data<Pcm16Sample>(
+               static_cast<int16_t>(sDeviceData->samples[ch][i]));
          }
       }
    }
@@ -385,7 +388,8 @@ invokeFinalMixCallback(DeviceTypeData &device,
             auto axChanId = (dev * numChannels) + ch;
 
             for (auto i = 0u; i < numSamples; ++i) {
-               samples[dev][ch][i] = Pcm16Sample::from_data(sDeviceData->samples[axChanId][i]);
+               samples[dev][ch][i] = fixed_from_data<Pcm16Sample>(
+                  static_cast<int16_t>(sDeviceData->samples[axChanId][i]));
             }
          }
       }
@@ -434,32 +438,32 @@ getDeviceGroup(AXDeviceType type)
    }
 }
 
-static uint32_t
+static uint16_t
 getDeviceNumDevices(AXDeviceType type)
 {
    decaf_check(type < AXDeviceType::Max);
-   static const uint32_t devices[] = { AXNumTvDevices, AXNumDrcDevices, AXNumRmtDevices };
+   static const uint16_t devices[] = { AXNumTvDevices, AXNumDrcDevices, AXNumRmtDevices };
    return devices[type];
 }
 
-static uint32_t
+static uint16_t
 getDeviceNumBuses(AXDeviceType type)
 {
    decaf_check(type < AXDeviceType::Max);
-   static const uint32_t busses[] = { AXNumTvBus, AXNumDrcBus, AXNumRmtBus };
+   static const uint16_t busses[] = { AXNumTvBus, AXNumDrcBus, AXNumRmtBus };
    return busses[type];
 }
 
-static uint32_t
+static uint16_t
 getDeviceNumChannels(AXDeviceType type)
 {
    decaf_check(type < AXDeviceType::Max);
-   static const uint32_t channels[] = { AXNumTvChannels, AXNumDrcChannels, AXNumRmtChannels };
+   static const uint16_t channels[] = { AXNumTvChannels, AXNumDrcChannels, AXNumRmtChannels };
    return channels[type];
 }
 
 static void
-mixDevice(AXDeviceType type, uint32_t numSamples)
+mixDevice(AXDeviceType type, uint16_t numSamples)
 {
    static const auto AXMaxDevices = 4;
    static const auto AXMaxBuses = 4;
@@ -600,11 +604,9 @@ mixDevice(AXDeviceType type, uint32_t numSamples)
 
 void
 mixOutput(int32_t* buffer,
-          int numSamples,
-          int numChannels)
+          uint16_t numSamples,
+          uint16_t numChannels)
 {
-   static const int NumOutputSamples = 48000 * 3 / 1000;
-
    // Decode audio samples from the source voices
    decodeVoiceSamples(numSamples);
 
@@ -616,7 +618,7 @@ mixOutput(int32_t* buffer,
    // Send off the TV device 0 data to be played on host
    for (auto i = 0; i < NumOutputSamples; ++i) {
       for (auto ch = 0; ch < numChannels; ++ch) {
-         buffer[numChannels * i + ch] = gTvSamples[0][ch][i].data();
+         buffer[numChannels * i + ch] = fixed_to_data(gTvSamples[0][ch][i]);
       }
    }
 }
@@ -858,7 +860,7 @@ AXGetDeviceVolume(AXDeviceType type,
    }
 
    if (outVolume) {
-      *outVolume = device->volume.data();
+      *outVolume = fixed_to_data(device->volume);
    }
 
    return AXResult::Success;
@@ -875,7 +877,7 @@ AXSetDeviceVolume(AXDeviceType type,
       return AXResult::InvalidDeviceType;
    }
 
-   device->volume = ufixed_1_15_t::from_data(volume);
+   device->volume = fixed_from_data<ufixed_1_15_t>(volume);
    return AXResult::Success;
 }
 
@@ -892,7 +894,7 @@ AXGetAuxReturnVolume(AXDeviceType type,
    }
 
    if (outVolume) {
-      *outVolume = device->aux[auxId].returnVolume.data();
+      *outVolume = fixed_to_data(device->aux[auxId].returnVolume);
    }
 
    return AXResult::Success;
@@ -910,7 +912,7 @@ AXSetAuxReturnVolume(AXDeviceType type,
       return AXResult::InvalidDeviceType;
    }
 
-   device->aux[auxId].returnVolume = ufixed_1_15_t::from_data(volume);
+   device->aux[auxId].returnVolume = fixed_from_data<ufixed_1_15_t>(volume);
    return AXResult::Success;
 }
 

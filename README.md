@@ -1,4 +1,4 @@
-[![Build status](https://ci.appveyor.com/api/projects/status/fbhhy0nf6nym9pcf/branch/master?svg=true)](https://ci.appveyor.com/project/exjam/decaf-emu) [![Build Status](https://travis-ci.org/decaf-emu/decaf-emu.svg?branch=master)](https://travis-ci.org/decaf-emu/decaf-emu)
+[![Build status](https://github.com/decaf-emu/decaf-emu/workflows/C%2FC%2B%2B%20CI/badge.svg)](https://github.com/decaf-emu/decaf-emu/actions?workflow=C%2FC%2B%2B+CI)
 
 # decaf-emu
 Researching Wii U emulation. Licensed under the terms of the GNU General Public License, version 3 or later (GPLv3+).
@@ -12,14 +12,13 @@ You can find us for developer discussion:
 - Linux with a modern C++17 friendly compiler
 - 64 bit
 - CMake v3.2+
-- OpenGL 4.5+ or Vulkan 1.1.92.1+
+- Vulkan 1.1.92.1+
 
 ## Support
 - None, this is an in-development project and user support is not provided.
 
 ## Binaries
-The latest Windows AppVeyor build is available from:
-- https://ci.appveyor.com/project/exjam/decaf-emu/build/artifacts?branch=master
+The latest Windows binaries are available via [Actions artifacts](https://github.com/decaf-emu/decaf-emu/actions).
 
 ## Running
 

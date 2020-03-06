@@ -16,17 +16,34 @@ namespace cafe::coreinit
 
 using ios::mcp::MCPAppType;
 using ios::mcp::MCPCountryCode;
+using ios::mcp::MCPDevice;
 using ios::mcp::MCPError;
 using ios::mcp::MCPRegion;
 using ios::mcp::MCPSysProdSettings;
 using ios::mcp::MCPTitleListType;
 using ios::mcp::MCPTitleListSearchFlags;
+using ios::mcp::MCPUpdateProgress;
 
 IOSError
 MCP_Open();
 
 void
 MCP_Close(IOSHandle handle);
+
+IOSError
+MCP_DeviceList(IOSHandle handle,
+               virt_ptr<int32_t> numDevices,
+               virt_ptr<MCPDevice> deviceList,
+               uint32_t deviceListSizeBytes);
+
+IOSError
+MCP_FullDeviceList(IOSHandle handle,
+                   virt_ptr<int32_t> numDevices,
+                   virt_ptr<MCPDevice> deviceList,
+                   uint32_t deviceListSizeBytes);
+
+int32_t
+MCP_GetErrorCodeForViewer(MCPError error);
 
 MCPError
 MCP_GetOwnTitleInfo(IOSHandle handle,
@@ -77,6 +94,18 @@ MCP_TitleListByUniqueIdAndIndexedDeviceAndAppType(IOSHandle handle,
                                                   virt_ptr<uint32_t> outTitleCount,
                                                   virt_ptr<MCPTitleListType> titleList,
                                                   uint32_t titleListSizeBytes);
+
+MCPError
+MCP_UpdateCheckContext(IOSHandle handle,
+                       virt_ptr<uint32_t> outResult);
+
+MCPError
+MCP_UpdateCheckResume(IOSHandle handle,
+                      virt_ptr<uint32_t> outResult);
+
+MCPError
+MCP_UpdateGetProgress(IOSHandle handle,
+                      virt_ptr<MCPUpdateProgress> outUpdateProgress);
 
 namespace internal
 {

@@ -1,4 +1,3 @@
-#pragma optimize("", off)
 #include "gx2.h"
 #include "gx2_cbpool.h"
 #include "gx2_registers.h"
@@ -94,7 +93,7 @@ GX2InitAlphaTestReg(virt_ptr<GX2AlphaTestReg> reg,
 }
 
 void
-GX2GetAlphaTestReg(const virt_ptr<GX2AlphaTestReg> reg,
+GX2GetAlphaTestReg(virt_ptr<const GX2AlphaTestReg> reg,
                    virt_ptr<BOOL> alphaTest,
                    virt_ptr<GX2CompareFunction> func,
                    virt_ptr<float> ref)
@@ -183,7 +182,7 @@ GX2InitAlphaToMaskReg(virt_ptr<GX2AlphaToMaskReg> reg,
 }
 
 void
-GX2GetAlphaToMaskReg(const virt_ptr<GX2AlphaToMaskReg> reg,
+GX2GetAlphaToMaskReg(virt_ptr<const GX2AlphaToMaskReg> reg,
                      virt_ptr<BOOL> alphaToMask,
                      virt_ptr<GX2AlphaToMaskMode> mode)
 {
@@ -1095,7 +1094,7 @@ GX2InitViewportReg(virt_ptr<GX2ViewportReg> reg,
    pa_cl_vport_xoffset = pa_cl_vport_xoffset
       .VPORT_XOFFSET(x + (width * 0.5f));
    pa_cl_vport_yscale = pa_cl_vport_yscale
-      .VPORT_YSCALE(height * 0.5f);
+      .VPORT_YSCALE(height * -0.5f);
    pa_cl_vport_yoffset = pa_cl_vport_yoffset
       .VPORT_YOFFSET(y + (height * 0.5f));
    pa_cl_vport_zscale = pa_cl_vport_zscale
@@ -1103,13 +1102,35 @@ GX2InitViewportReg(virt_ptr<GX2ViewportReg> reg,
    pa_cl_vport_zoffset = pa_cl_vport_zoffset
       .VPORT_ZOFFSET((farZ + nearZ) * 0.5f);
 
-   pa_cl_gb_vert_clip_adj = pa_cl_gb_vert_clip_adj
+   if (width == 0.0f || height == 0.0f) {
+      pa_cl_gb_vert_clip_adj = pa_cl_gb_vert_clip_adj
+         .DATA_REGISTER(1.0f);
+      pa_cl_gb_horz_clip_adj = pa_cl_gb_horz_clip_adj
+         .DATA_REGISTER(1.0f);
+   } else {
+      if (height < 0.0f) {
+         y += height;
+         height = -height;
+      }
+
+      auto horz_clip_adj = x + 8192.0f;
+      if (horz_clip_adj <= 0.0f) {
+         horz_clip_adj = 8192.0f - (width + x);
+      }
+      pa_cl_gb_horz_clip_adj = pa_cl_gb_horz_clip_adj
+         .DATA_REGISTER((horz_clip_adj + horz_clip_adj + width) / width);
+
+      auto vert_clip_adj = y + 8192.0f;
+      if (vert_clip_adj <= 0.0f) {
+         vert_clip_adj = 8192.0f - (height + y);
+      }
+      pa_cl_gb_vert_clip_adj = pa_cl_gb_vert_clip_adj
+         .DATA_REGISTER((vert_clip_adj + vert_clip_adj + height) / height);
+   }
+
+   pa_cl_gb_horz_disc_adj = pa_cl_gb_horz_disc_adj
       .DATA_REGISTER(1.0f);
    pa_cl_gb_vert_disc_adj = pa_cl_gb_vert_disc_adj
-      .DATA_REGISTER(1.0f);
-   pa_cl_gb_horz_clip_adj = pa_cl_gb_horz_clip_adj
-      .DATA_REGISTER(1.0f);
-   pa_cl_gb_horz_disc_adj = pa_cl_gb_horz_disc_adj
       .DATA_REGISTER(1.0f);
 
    pa_sc_vport_zmin = pa_sc_vport_zmin
@@ -1149,27 +1170,14 @@ GX2GetViewportReg(virt_ptr<GX2ViewportReg> reg,
    auto pa_cl_vport_zscale = reg->pa_cl_vport_zscale.value();
    auto pa_cl_vport_zoffset = reg->pa_cl_vport_zoffset.value();
 
-   auto pa_cl_gb_vert_clip_adj = reg->pa_cl_gb_vert_clip_adj.value();
-   auto pa_cl_gb_vert_disc_adj = reg->pa_cl_gb_vert_disc_adj.value();
-   auto pa_cl_gb_horz_clip_adj = reg->pa_cl_gb_horz_clip_adj.value();
-   auto pa_cl_gb_horz_disc_adj = reg->pa_cl_gb_horz_disc_adj.value();
-
-   auto pa_sc_vport_zmin = reg->pa_sc_vport_zmin.value();
-   auto pa_sc_vport_zmax = reg->pa_sc_vport_zmax.value();
-
    *x = pa_cl_vport_xoffset.VPORT_XOFFSET() - pa_cl_vport_xscale.VPORT_XSCALE();
-   *y = pa_cl_vport_yoffset.VPORT_YOFFSET() - pa_cl_vport_yscale.VPORT_YSCALE();
+   *y = pa_cl_vport_yoffset.VPORT_YOFFSET() + pa_cl_vport_yscale.VPORT_YSCALE();
 
    *width = 2.0f * pa_cl_vport_xscale.VPORT_XSCALE();
-   *height = 2.0f * pa_cl_vport_yscale.VPORT_YSCALE();
+   *height = -2.0f * pa_cl_vport_yscale.VPORT_YSCALE();
 
-   if (pa_cl_vport_zscale.VPORT_ZSCALE() > 0.0f) {
-      *nearZ = pa_sc_vport_zmin.VPORT_ZMIN();
-      *farZ = pa_sc_vport_zmax.VPORT_ZMAX();
-   } else {
-      *farZ = pa_sc_vport_zmin.VPORT_ZMIN();
-      *nearZ = pa_sc_vport_zmax.VPORT_ZMAX();
-   }
+   *farZ = pa_cl_vport_zoffset.VPORT_ZOFFSET() + pa_cl_vport_zscale.VPORT_ZSCALE();
+   *nearZ = pa_cl_vport_zoffset.VPORT_ZOFFSET() - pa_cl_vport_zscale.VPORT_ZSCALE();
 }
 
 void

@@ -13,9 +13,10 @@ class Client
 public:
    Result initialise(virt_ptr<const char> device);
    Result close();
+   bool isInitialised() const;
 
    template<typename CommandType>
-   Result sendSyncRequest(ClientCommand<CommandType> &command)
+   Result sendSyncRequest(const ClientCommand<CommandType> &command)
    {
       return sendSyncRequest(command.getCommandData());
    }

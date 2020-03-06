@@ -54,7 +54,7 @@ template <typename T>
 struct pointer_dereference_type<T,
    typename std::enable_if<std::is_void<T>::value>::type>
 {
-   using type = void;
+   using type = T;
 };
 
 /*
@@ -256,44 +256,23 @@ public:
 
    template<typename K = value_type>
    typename std::enable_if<!std::is_void<K>::value, dereference_type>::type &
-   operator *()
+   operator *() const
    {
       return *internal::translate<dereference_type>(mAddress);
    }
 
    template<typename K = value_type>
-   typename std::enable_if<!std::is_void<K>::value, const dereference_type>::type &
-   operator *() const
-   {
-      return *internal::translate<const dereference_type>(mAddress);
-   }
-
-   template<typename K = value_type>
    typename std::enable_if<!std::is_void<K>::value, dereference_type>::type *
-   operator ->()
+   operator ->() const
    {
       return internal::translate<dereference_type>(mAddress);
    }
 
    template<typename K = value_type>
-   typename std::enable_if<!std::is_void<K>::value, const dereference_type>::type *
-   operator ->() const
-   {
-      return internal::translate<const dereference_type>(mAddress);
-   }
-
-   template<typename K = value_type>
    typename std::enable_if<!std::is_void<K>::value, dereference_type>::type &
-   operator [](size_t index)
-   {
-      return internal::translate<dereference_type>(mAddress)[index];
-   }
-
-   template<typename K = value_type>
-   typename std::enable_if<!std::is_void<K>::value, const dereference_type>::type &
    operator [](size_t index) const
    {
-      return internal::translate<const dereference_type>(mAddress)[index];
+      return internal::translate<dereference_type>(mAddress)[index];
    }
 
    constexpr bool operator == (std::nullptr_t) const
@@ -454,13 +433,40 @@ using PhysicalPointer = Pointer<Value, PhysicalAddress>;
 
 template<typename AddressType, typename SrcTypePtr, typename DstTypePtr>
 struct pointer_cast_impl<AddressType, SrcTypePtr, DstTypePtr,
-   typename std::enable_if<std::is_pointer<SrcTypePtr>::value && std::is_pointer<DstTypePtr>::value>::type>
+   typename std::enable_if<
+      std::conjunction_v<
+         std::is_pointer<SrcTypePtr>,
+         std::is_pointer<DstTypePtr>,
+         std::negation<std::is_const<std::remove_pointer_t<SrcTypePtr>>>
+      >>::type>
 {
-   using DstType = typename std::remove_pointer<DstTypePtr>::type;
-   using SrcType = typename std::remove_pointer<SrcTypePtr>::type;
+   using DstType = std::remove_pointer_t<DstTypePtr>;
+   using SrcType = std::remove_pointer_t<SrcTypePtr>;
 
    // Pointer<X, AddressType> to Pointer<Y, AddressType>
    static constexpr Pointer<DstType, AddressType> cast(Pointer<SrcType, AddressType> src)
+   {
+      Pointer<DstType, AddressType> dst;
+      dst.mAddress = src.mAddress;
+      return dst;
+   }
+};
+
+template<typename AddressType, typename SrcTypePtr, typename DstTypePtr>
+struct pointer_cast_impl<AddressType, SrcTypePtr, DstTypePtr,
+   typename std::enable_if<
+      std::conjunction_v<
+         std::is_pointer<SrcTypePtr>,
+         std::is_pointer<DstTypePtr>,
+         std::is_const<std::remove_pointer_t<SrcTypePtr>>,
+         std::is_const<std::remove_pointer_t<DstTypePtr>>
+      >>::type>
+{
+   using DstType = std::remove_pointer_t<DstTypePtr>;
+   using SrcType = std::remove_pointer_t<SrcTypePtr>;
+
+   // Pointer<const X, AddressType> to Pointer<const Y, AddressType>
+   static constexpr Pointer<const DstType, AddressType> cast(Pointer<SrcType, AddressType> src)
    {
       Pointer<DstType, AddressType> dst;
       dst.mAddress = src.mAddress;
@@ -503,105 +509,20 @@ struct pointer_cast_impl<AddressType, SrcTypePtr, AddressType,
 namespace fmt
 {
 
-inline namespace v5
+inline namespace v6
 {
 template<typename Type, typename Char, typename Enabled>
 struct formatter;
 }
 
-template<typename OutputIt>
-auto format_escaped_string(OutputIt iter, const char *data)
-{
-   iter = format_to(iter, "\"");
-
-   auto hasMoreBytes = true;
-   for (auto i = 0; i < 128; ++i) {
-      auto c = data[i];
-      if (c == 0) {
-         hasMoreBytes = false;
-         break;
-      }
-
-      if (c >= ' ' && c <= '~' && c != '\\' && c != '"') {
-         iter = format_to(iter, "{}", c);
-      } else {
-         switch (c) {
-         case '"': iter = format_to(iter, "\\\""); break;
-         case '\\': iter = format_to(iter, "\\\\"); break;
-         case '\t': iter = format_to(iter, "\\t"); break;
-         case '\r': iter = format_to(iter, "\\r"); break;
-         case '\n': iter = format_to(iter, "\\n"); break;
-         default: iter = format_to(iter, "\\x{:02x}", c); break;
-         }
-      }
-   }
-
-   if (!hasMoreBytes) {
-      iter = format_to(iter, "\"");
-   } else {
-      iter = format_to(iter, "\"...");
-   }
-
-   return iter;
-}
+// Custom formatter in cpu_formatters.h
+template<typename AddressType, typename Char>
+struct formatter<cpu::Pointer<char, AddressType>, Char, void>;
 
 template<typename AddressType, typename Char>
-struct formatter<cpu::Pointer<char, AddressType>, Char, void>
-{
-   template<typename ParseContext>
-   constexpr auto parse(ParseContext &ctx)
-   {
-      return ctx.begin();
-   }
-
-   template<typename FormatContext>
-   auto format(const cpu::Pointer<char, AddressType> &ptr, FormatContext &ctx)
-   {
-      if (!ptr) {
-         return format_to(ctx.begin(), "<NULL>");
-      } else {
-         auto bytes = ptr.getRawPointer();
-         return format_escaped_string(ctx.begin(), bytes);
-      }
-   }
-};
-
-template<typename AddressType, typename Char>
-struct formatter<cpu::Pointer<const char, AddressType>, Char, void>
-{
-   template<typename ParseContext>
-   constexpr auto parse(ParseContext &ctx)
-   {
-      return ctx.begin();
-   }
-
-   template<typename FormatContext>
-   auto format(const cpu::Pointer<const char, AddressType> &ptr, FormatContext &ctx)
-   {
-      if (!ptr) {
-         return format_to(ctx.begin(), "<NULL>");
-      } else {
-         const char *bytes = ptr.getRawPointer();
-         return format_escaped_string(ctx.begin(), bytes);
-      }
-   }
-};
+struct formatter<cpu::Pointer<const char, AddressType>, Char, void>;
 
 template<typename ValueType, typename AddressType, typename Char>
-struct formatter<cpu::Pointer<ValueType, AddressType>, Char, void>
-{
-   template<typename ParseContext>
-   constexpr auto parse(ParseContext &ctx)
-   {
-      return ctx.begin();
-   }
-
-   template<typename FormatContext>
-   auto format(const cpu::Pointer<ValueType, AddressType> &ptr, FormatContext &ctx)
-   {
-      auto addr = cpu::pointer_cast_impl<AddressType, ValueType *, AddressType>::cast(ptr);
-      return format_to(ctx.begin(), "0x{:08X}", static_cast<uint32_t>(addr));
-   }
-};
+struct formatter<cpu::Pointer<ValueType, AddressType>, Char, void>;
 
 } // namespace fmt

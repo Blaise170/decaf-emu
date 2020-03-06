@@ -3,18 +3,29 @@
 #include "h264_decode.h"
 #include "h264_stream.h"
 
-#include "cafe/libraries/cafe_hle_stub.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 #include "cafe/cafe_stackobject.h"
+#include "cafe/libraries/cafe_hle_stub.h"
 
 #include <common/align.h>
 #include <common/decaf_assert.h>
-#include <fmt/format.h>
+#include <common/log.h>
+#include <fmt/core.h>
+#include <libcpu/cpu_formatters.h>
 
+// ffmpeg unfortunately does not validate with high warning levels
+#ifdef _MSC_VER
+#   pragma warning(push)
+#   pragma warning(disable: 4244)
+#endif
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavfilter/avfilter.h>
 #include <libswscale/swscale.h>
 }
+#ifdef _MSC_VER
+#   pragma warning(pop)
+#endif
 
 namespace cafe::h264
 {

@@ -2,6 +2,7 @@
 #ifdef DECAF_VULKAN
 #include "latte/latte_shaderparser.h"
 #include "spirv_spvbuilder.h"
+#include "spirv_pushconstants.h"
 #include "gpu_config.h"
 
 namespace spirv
@@ -353,30 +354,30 @@ public:
       return createLoad(cfileChanPtr);
    }
 
-   spv::Id readSrcVarRef(const SrcVarRef& source)
+   spv::Id readSrcVarRef(const SrcVarRef& srcRef)
    {
       spv::Id srcId;
 
-      if (source.type == latte::SrcVarRef::Type::GPR) {
-         srcId = readGprChanRef(source.gprChan);
-      } else if (source.type == latte::SrcVarRef::Type::CBUFFER) {
-         srcId = readCbufferChanRef(source.cbufferChan);
-      } else if (source.type == latte::SrcVarRef::Type::CFILE) {
-         srcId = readCfileChanRef(source.cfileChan);
-      } else if (source.type == latte::SrcVarRef::Type::PREVRES) {
-         decaf_check(source.prevres.unit >= latte::SQ_CHAN::X);
-         decaf_check(source.prevres.unit <= latte::SQ_CHAN::T);
-         srcId = getPvId(source.prevres.unit);
-      } else if (source.type == latte::SrcVarRef::Type::VALUE) {
-         if (source.valueType == latte::VarRefType::FLOAT) {
+      if (srcRef.type == latte::SrcVarRef::Type::GPR) {
+         srcId = readGprChanRef(srcRef.gprChan);
+      } else if (srcRef.type == latte::SrcVarRef::Type::CBUFFER) {
+         srcId = readCbufferChanRef(srcRef.cbufferChan);
+      } else if (srcRef.type == latte::SrcVarRef::Type::CFILE) {
+         srcId = readCfileChanRef(srcRef.cfileChan);
+      } else if (srcRef.type == latte::SrcVarRef::Type::PREVRES) {
+         decaf_check(srcRef.prevres.unit >= latte::SQ_CHAN::X);
+         decaf_check(srcRef.prevres.unit <= latte::SQ_CHAN::T);
+         srcId = getPvId(srcRef.prevres.unit);
+      } else if (srcRef.type == latte::SrcVarRef::Type::VALUE) {
+         if (srcRef.valueType == latte::VarRefType::FLOAT) {
             // We write floats as UINT's which are bitcast to preserve precision
             // in the case that the value will be used as a uint.
-            auto srcFloatData = makeUintConstant(source.value.uintValue);
+            auto srcFloatData = makeUintConstant(srcRef.value.uintValue);
             srcId = createUnaryOp(spv::OpBitcast, floatType(), srcFloatData);
-         } else if (source.valueType == latte::VarRefType::INT) {
-            srcId = makeIntConstant(source.value.intValue);
-         } else if (source.valueType == latte::VarRefType::UINT) {
-            srcId = makeUintConstant(source.value.uintValue);
+         } else if (srcRef.valueType == latte::VarRefType::INT) {
+            srcId = makeIntConstant(srcRef.value.intValue);
+         } else if (srcRef.valueType == latte::VarRefType::UINT) {
+            srcId = makeUintConstant(srcRef.value.uintValue);
          } else {
             decaf_abort("Unexpected source value type");
          }
@@ -384,17 +385,17 @@ public:
          decaf_abort("Unexpected source var type");
       }
 
-      if (source.valueType == latte::VarRefType::FLOAT) {
+      if (srcRef.valueType == latte::VarRefType::FLOAT) {
          // We are naturally a float for SPIRV conversion
-      } else if (source.valueType == latte::VarRefType::INT) {
+      } else if (srcRef.valueType == latte::VarRefType::INT) {
          srcId = createUnaryOp(spv::Op::OpBitcast, intType(), srcId);
-      } else if (source.valueType == latte::VarRefType::UINT) {
+      } else if (srcRef.valueType == latte::VarRefType::UINT) {
          srcId = createUnaryOp(spv::Op::OpBitcast, uintType(), srcId);
       } else {
          decaf_abort("Unexpected source value type");
       }
 
-      if (source.isAbsolute) {
+      if (srcRef.isAbsolute) {
          if (getTypeId(srcId) == intType()) {
             srcId = createBuiltinCall(intType(), glslStd450(), GLSLstd450::GLSLstd450SAbs, { srcId });
          } else if (getTypeId(srcId) == floatType()) {
@@ -404,7 +405,7 @@ public:
          }
       }
 
-      if (source.isNegated) {
+      if (srcRef.isNegated) {
          if (getTypeId(srcId) == intType()) {
             srcId = createUnaryOp(spv::Op::OpSNegate, intType(), srcId);
          } else if (getTypeId(srcId) == floatType()) {
@@ -420,8 +421,8 @@ public:
    spv::Id readAluInstSrc(const latte::ControlFlowInst &cf, const latte::AluInstructionGroup &group, const latte::AluInst &inst,
                       uint32_t srcIndex, latte::VarRefType valueType = latte::VarRefType::FLOAT)
    {
-      auto source = makeSrcVar(cf, group, inst, srcIndex, valueType);
-      return readSrcVarRef(source);
+      auto srcRef = makeSrcVar(cf, group, inst, srcIndex, valueType);
+      return readSrcVarRef(srcRef);
    }
 
    spv::Id readAluReducSrc(const latte::ControlFlowInst &cf, const latte::AluInstructionGroup &group,
@@ -578,12 +579,12 @@ public:
       }
    }
 
-   spv::Id applySelMask(spv::Id dest, spv::Id source, std::array<SQ_SEL, 4> mask, uint32_t maxComponents = 4)
+   spv::Id applySelMask(spv::Id dest, spv::Id src, std::array<SQ_SEL, 4> mask, uint32_t maxComponents = 4)
    {
       // We only support doing masking against 4-component vectors.
-      decaf_check(getNumComponents(source) == 4);
+      decaf_check(getNumComponents(src) == 4);
 
-      auto sourceType = getTypeId(source);
+      auto sourceType = getTypeId(src);
       auto sourceBaseType = this->getContainedTypeId(sourceType);
 
       // For simplicity in the checking below, we set the unused mask values
@@ -599,7 +600,7 @@ public:
       isNoop &= (mask[2] == latte::SQ_SEL::SEL_Z);
       isNoop &= (mask[3] == latte::SQ_SEL::SEL_W);
       if (isNoop) {
-         return shrinkVector(source, maxComponents);
+         return shrinkVector(src, maxComponents);
       }
 
       // If the swizzle is ____, we should just skip processing entirely
@@ -667,17 +668,17 @@ public:
 
          if (dest == spv::NoResult) {
             decaf_check(isSwizzleFullyUnmasked(mask));
-            dest = source;
+            dest = src;
          }
 
          if (maxComponents == 1) {
-            return createOp(spv::OpCompositeExtract, sourceBaseType, { source, shuffleIdx[0] });
+            return createOp(spv::OpCompositeExtract, sourceBaseType, { src, shuffleIdx[0] });
          } else if (maxComponents == 2) {
-            return createOp(spv::Op::OpVectorShuffle, vecType(sourceBaseType, 2), { dest, source, shuffleIdx[0], shuffleIdx[1] });
+            return createOp(spv::Op::OpVectorShuffle, vecType(sourceBaseType, 2), { dest, src, shuffleIdx[0], shuffleIdx[1] });
          } else if (maxComponents == 2) {
-            return createOp(spv::Op::OpVectorShuffle, vecType(sourceBaseType, 3), { dest, source, shuffleIdx[0], shuffleIdx[1], shuffleIdx[2] });
+            return createOp(spv::Op::OpVectorShuffle, vecType(sourceBaseType, 3), { dest, src, shuffleIdx[0], shuffleIdx[1], shuffleIdx[2] });
          } else if (maxComponents == 4) {
-            return createOp(spv::Op::OpVectorShuffle, vecType(sourceBaseType, 4), { dest, source, shuffleIdx[0], shuffleIdx[1], shuffleIdx[2], shuffleIdx[3] });
+            return createOp(spv::Op::OpVectorShuffle, vecType(sourceBaseType, 4), { dest, src, shuffleIdx[0], shuffleIdx[1], shuffleIdx[2], shuffleIdx[3] });
          } else {
             decaf_abort("Unexpected component count during swizzle");
          }
@@ -695,7 +696,7 @@ public:
       {
          auto& elem = sourceElems[elemIdx];
          if (!elem) {
-            elem = createOp(spv::OpCompositeExtract, floatType(), { source, elemIdx });
+            elem = createOp(spv::OpCompositeExtract, floatType(), { src, elemIdx });
          }
          return elem;
       };
@@ -1134,7 +1135,7 @@ public:
          auto logicOpVal = createBinOp(spv::OpShiftRightLogical, uintType(), alphaDataVal, makeUintConstant(8));
 
          auto lopSet = createBinOp(spv::Op::OpIEqual, boolType(), logicOpVal, makeUintConstant(1));
-         auto block = spv::Builder::If { lopSet, spv::SelectionControlMaskNone, *this };
+         auto eq1block = spv::Builder::If { lopSet, spv::SelectionControlMaskNone, *this };
          {
             if (sourceValType == float4Type()) {
                auto newValElem = makeFloatConstant(1.0f);
@@ -1152,10 +1153,10 @@ public:
                decaf_abort("Unexpected source pixel variable type");
             }
          }
-         block.makeBeginElse();
+         eq1block.makeBeginElse();
          {
             auto lopClear = createBinOp(spv::Op::OpIEqual, boolType(), logicOpVal, makeUintConstant(2));
-            auto block = spv::Builder::If { lopClear, spv::SelectionControlMaskNone, *this };
+            auto eq2block = spv::Builder::If { lopClear, spv::SelectionControlMaskNone, *this };
             {
                if (sourceValType == float4Type()) {
                   auto newValElem = makeFloatConstant(0.0f);
@@ -1173,15 +1174,13 @@ public:
                   decaf_abort("Unexpected source pixel variable type");
                }
             }
-            block.makeEndIf();
+            eq2block.makeEndIf();
          }
-         block.makeEndIf();
+         eq1block.makeEndIf();
 
          // We need to premultiply the alpha in cases where premultiplied alpha is enabled
          // globally but this specific target is not performing the premultiplication.
          if (sourceValType == float4Type()) {
-            auto zeroConst = makeUintConstant(0);
-            auto oneConst = makeUintConstant(1);
             auto twoConst = makeUintConstant(2);
             auto oneFConst = makeFloatConstant(1.0f);
 
@@ -1191,7 +1190,7 @@ public:
             auto targetBitConst = makeUintConstant(1 << ref.output.arrayBase);
             auto targetBitVal = createBinOp(spv::OpBitwiseAnd, uintType(), needsPremulVal, targetBitConst);
             auto pred = createBinOp(spv::OpINotEqual, boolType(), targetBitVal, zeroConst);
-            auto block = spv::Builder::If { pred, spv::SelectionControlMaskNone, *this };
+            auto eq0block = spv::Builder::If { pred, spv::SelectionControlMaskNone, *this };
             {
                exportVal = createLoad(pixelTmpVar);
 
@@ -1201,7 +1200,7 @@ public:
 
                createStore(premulExportVal, pixelTmpVar);
             }
-            block.makeEndIf();
+            eq0block.makeEndIf();
          }
 
          exportVal = createLoad(pixelTmpVar);
@@ -1260,6 +1259,16 @@ public:
       return mLayerId;
    }
 
+   spv::Id pointSizeVar()
+   {
+      if (!mPointSize) {
+         mPointSize = createVariable(spv::StorageClassOutput, floatType(), "PointSize");
+         addDecoration(mPointSize, spv::DecorationBuiltIn, spv::BuiltInPointSize);
+         mEntryPoint->addIdOperand(mPointSize);
+      }
+      return mPointSize;
+   }
+
    spv::Id inputAttribVar(int semLocation, spv::Id attribType)
    {
       auto attribIdx = mAttribInputs.size();
@@ -1296,7 +1305,7 @@ public:
 
       auto inputVar = mRingInputs[index];
       if (!inputVar) {
-         inputVar = createVariable(spv::StorageClassInput, arrayType(float4Type(), 3),
+         inputVar = createVariable(spv::StorageClassInput, arrayType(float4Type(), 16, 3),
                                         fmt::format("RINGIN_{}", index).c_str());
          addDecoration(inputVar, spv::DecorationLocation, static_cast<int>(index));
 
@@ -1310,11 +1319,22 @@ public:
    spv::Id vsPushConstVar()
    {
       if (!mVsPushConsts) {
-         auto vsPushStruct = makeStructType({ float4Type(), float4Type() }, "VS_PUSH_CONSTANTS");
-         addMemberDecoration(vsPushStruct, 0, spv::DecorationOffset, 0);
+         auto vsPushStruct = makeStructType({
+               float4Type(), float4Type(), floatType()
+            }, "VS_PUSH_CONSTANTS");
+
+         addMemberDecoration(vsPushStruct, 0, spv::DecorationOffset,
+            spirv::VertexPushConstantsOffset + static_cast<int>(offsetof(spirv::VertexPushConstants, posMulAdd)));
          addMemberName(vsPushStruct, 0, "posMulAdd");
-         addMemberDecoration(vsPushStruct, 1, spv::DecorationOffset, 16);
+
+         addMemberDecoration(vsPushStruct, 1, spv::DecorationOffset,
+            spirv::VertexPushConstantsOffset + static_cast<int>(offsetof(spirv::VertexPushConstants, zSpaceMul)));
          addMemberName(vsPushStruct, 1, "zSpaceMul");
+
+         addMemberDecoration(vsPushStruct, 2, spv::DecorationOffset,
+            spirv::VertexPushConstantsOffset + static_cast<int>(offsetof(spirv::VertexPushConstants, pointSize)));
+         addMemberName(vsPushStruct, 2, "pointSize");
+
          addDecoration(vsPushStruct, spv::DecorationBlock);
          mVsPushConsts = createVariable(spv::StorageClassPushConstant, vsPushStruct, "VS_PUSH");
       }
@@ -1329,13 +1349,22 @@ public:
    spv::Id psPushConstVar()
    {
       if (!mPsPushConsts) {
-         auto psPushStruct = makeStructType({ uintType(), floatType(), uintType() }, "PS_PUSH_DATA");
-         addMemberDecoration(psPushStruct, 0, spv::DecorationOffset, 32 + 0);
+         auto psPushStruct = makeStructType({
+               uintType(), floatType(), uintType()
+            }, "PS_PUSH_DATA");
+
+         addMemberDecoration(psPushStruct, 0, spv::DecorationOffset,
+            spirv::FragmentPushConstantsOffset + static_cast<int>(offsetof(spirv::FragmentPushConstants, alphaFunc)));
          addMemberName(psPushStruct, 0, "alphaFunc");
-         addMemberDecoration(psPushStruct, 1, spv::DecorationOffset, 32 + 4);
+
+         addMemberDecoration(psPushStruct, 1, spv::DecorationOffset,
+            spirv::FragmentPushConstantsOffset + static_cast<int>(offsetof(spirv::FragmentPushConstants, alphaRef)));
          addMemberName(psPushStruct, 1, "alphaRef");
-         addMemberDecoration(psPushStruct, 2, spv::DecorationOffset, 32 + 8);
+
+         addMemberDecoration(psPushStruct, 2, spv::DecorationOffset,
+            spirv::FragmentPushConstantsOffset + static_cast<int>(offsetof(spirv::FragmentPushConstants, needsPremultiply)));
          addMemberName(psPushStruct, 2, "needsPremultiply");
+
          addDecoration(psPushStruct, spv::DecorationBlock);
          mPsPushConsts = createVariable(spv::StorageClassPushConstant, psPushStruct, "PS_PUSH");
       }
@@ -1345,11 +1374,10 @@ public:
    spv::Id cfileVar()
    {
       if (!mRegistersBuffer) {
-         auto regsType = arrayType(float4Type(), 256);
-         addDecoration(regsType, spv::DecorationArrayStride, 16);
+         auto regsType = arrayType(float4Type(), 16, 256);
          auto structType = this->makeStructType({ regsType }, "CFILE_DATA");
          addMemberDecoration(structType, 0, spv::DecorationOffset, 0);
-         addDecoration(structType, spv::DecorationBlock);
+         addDecoration(structType, spv::DecorationBufferBlock);
          addMemberName(structType, 0, "values");
 
          auto bindingIdx = mBindingBase + latte::MaxTextures;
@@ -1357,6 +1385,7 @@ public:
          mRegistersBuffer = createVariable(spv::StorageClassUniform, structType, "CFILE");
          addDecoration(mRegistersBuffer, spv::DecorationDescriptorSet, 0);
          addDecoration(mRegistersBuffer, spv::DecorationBinding, bindingIdx);
+         addDecoration(mRegistersBuffer, spv::DecorationNonWritable);
       }
 
       return mRegistersBuffer;
@@ -1368,12 +1397,11 @@ public:
 
       auto cbuffer = mUniformBuffers[cbufferIdx];
       if (!cbuffer) {
-         auto valuesType = arrayType(float4Type(), 0);
-         addDecoration(valuesType, spv::DecorationArrayStride, 16);
+         auto valuesType = arrayType(float4Type(), 16, 0);
 
          auto structType = this->makeStructType({ valuesType }, fmt::format("CBUFFER_DATA_{}", cbufferIdx).c_str());
          addMemberDecoration(structType, 0, spv::DecorationOffset, 0);
-         addDecoration(structType, spv::DecorationBlock);
+         addDecoration(structType, spv::DecorationBufferBlock);
          addMemberName(structType, 0, "values");
 
          auto bindingIdx = mBindingBase + latte::MaxTextures + cbufferIdx;
@@ -1381,6 +1409,7 @@ public:
          cbuffer = createVariable(spv::StorageClassUniform, structType, fmt::format("CBUFFER_{}", cbufferIdx).c_str());
          addDecoration(cbuffer, spv::DecorationDescriptorSet, 0);
          addDecoration(cbuffer, spv::DecorationBinding, bindingIdx);
+         addDecoration(cbuffer, spv::DecorationNonWritable);
 
          mUniformBuffers[cbufferIdx] = cbuffer;
       }
@@ -1719,7 +1748,7 @@ public:
    spv::Id stackVar()
    {
       if (!mStack) {
-         auto stackType = makeArrayType(intType(), makeUintConstant(16), 0);
+         auto stackType = arrayType(intType(), 4, 16);
          mStack = createVariable(spv::StorageClass::StorageClassPrivate, stackType, "stackVar");
       }
       return mStack;
@@ -1736,7 +1765,7 @@ public:
    spv::Id gprVar()
    {
       if (!mGpr) {
-         auto gprType = makeArrayType(float4Type(), makeUintConstant(128), 0);
+         auto gprType = arrayType(float4Type(), 16, 128);
          mGpr = createVariable(spv::StorageClass::StorageClassPrivate, gprType, "RVar");
       }
       return mGpr;
@@ -1745,7 +1774,7 @@ public:
    spv::Id ringVar()
    {
       if (!mRing) {
-         auto ringType = makeArrayType(float4Type(), makeUintConstant(128), 0);
+         auto ringType = arrayType(float4Type(), 16, 128);
          mRing = createVariable(spv::StorageClass::StorageClassPrivate, ringType, "LocalRing");
       }
       return mRing;
@@ -1884,6 +1913,7 @@ protected:
    spv::Id mFragCoord = spv::NoResult;
    spv::Id mFrontFacing = spv::NoResult;
    spv::Id mLayerId = spv::NoResult;
+   spv::Id mPointSize = spv::NoResult;
 
    spv::Id mRegistersBuffer = spv::NoResult;
    std::array<spv::Id, latte::MaxUniformBlocks> mUniformBuffers = { spv::NoResult };

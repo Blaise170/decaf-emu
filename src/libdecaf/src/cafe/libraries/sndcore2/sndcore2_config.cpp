@@ -2,7 +2,7 @@
 #include "sndcore2_config.h"
 #include "sndcore2_voice.h"
 
-#include "cafe/cafe_ppc_interface_invoke.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 #include "cafe/cafe_stackobject.h"
 #include "cafe/libraries/cafe_hle_stub.h"
 #include "cafe/libraries/coreinit/coreinit_alarm.h"
@@ -14,7 +14,8 @@
 #include "decaf_sound.h"
 
 #include <common/log.h>
-#include <fmt/format.h>
+#include <fmt/core.h>
+#include <libcpu/cpu_formatters.h>
 
 using namespace cafe::coreinit;
 
@@ -254,7 +255,8 @@ frameCallbackThreadEntry(uint32_t core_id,
                          virt_ptr<void>)
 {
    static const int NumOutputSamples = (48000 * 3) / 1000;
-   int numInputSamples = sConfigData->outputRate * 3 / 1000;
+   uint16_t numInputSamples = static_cast<uint16_t>(sConfigData->outputRate * 3 / 1000);
+   uint16_t numOutputChannels = static_cast<uint16_t>(sConfigData->outputChannels);
 
    while (true) {
       coreinit::internal::lockScheduler();
@@ -274,8 +276,8 @@ frameCallbackThreadEntry(uint32_t core_id,
          }
       }
 
-      decaf_check(static_cast<size_t>(NumOutputSamples * sConfigData->outputChannels) <= sConfigData->mixBuffer.size());
-      internal::mixOutput(&sConfigData->mixBuffer[0], numInputSamples, sConfigData->outputChannels);
+      decaf_check(static_cast<size_t>(NumOutputSamples * numOutputChannels) <= sConfigData->mixBuffer.size());
+      internal::mixOutput(&sConfigData->mixBuffer[0], numInputSamples, numOutputChannels);
 
       auto driver = decaf::getSoundDriver();
 

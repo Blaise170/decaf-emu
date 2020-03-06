@@ -1,40 +1,23 @@
 #pragma once
-#include "cafe_hle_library_data.h"
-#include "cafe_hle_library_function.h"
+#include "cafe_hle_library_symbol.h"
 #include "cafe_hle_library_typeinfo.h"
 
-#include <common/decaf_assert.h>
-#include <libcpu/cpu.h>
+#include <libcpu/state.h>
+
 #include <map>
 #include <string>
 #include <vector>
 
-#define fnptr_decltype(Func) \
-    std::conditional<std::is_function<decltype(Func)>::value, std::add_pointer<decltype(Func)>::type, decltype(Func)>::type
-
-#define RegisterEntryPoint(fn) \
-   registerFunctionExport<fnptr_decltype(fn), fn>("rpl_entry")
-
-#define RegisterFunctionExport(fn) \
-   registerFunctionExport<fnptr_decltype(fn), fn>(#fn)
-
-#define RegisterFunctionExportName(name, fn) \
-   registerFunctionExport<fnptr_decltype(fn), fn>(name)
-
-#define RegisterDataExport(data) \
-   registerDataExport(#data, data)
-
-#define RegisterDataExportName(name, data) \
-   registerDataExport(name, data)
-
-#define RegisterFunctionInternal(fn, ptr) \
-   registerFunctionInternal<fnptr_decltype(fn), fn>("__internal__" # fn, ptr)
-
-#define RegisterDataInternal(data) \
-   registerDataInternal("__internal__" # data, data)
-
 namespace cafe::hle
 {
+
+struct UnimplementedLibraryFunction
+{
+   class Library* library = nullptr;
+   std::string name;
+   uint32_t syscallID = 0xFFFFFFFFu;
+   virt_addr value;
+};
 
 enum class LibraryId
 {
@@ -178,12 +161,7 @@ public:
    }
 
    void
-   generate()
-   {
-      registerSymbols();
-      registerSystemCalls();
-      generateRpl();
-   }
+   generate();
 
    void
    relocate(virt_addr textBaseAddress,
@@ -213,6 +191,34 @@ public:
       return mSymbolMap;
    }
 
+   void
+   registerLibraryDependency(const char *name)
+   {
+      mLibraryDependencies.push_back(name);
+   }
+
+   void
+   registerSymbol(const std::string &name,
+                  std::unique_ptr<LibrarySymbol> symbol)
+   {
+      decaf_check(mSymbolMap.find(name) == mSymbolMap.end());
+      symbol->index = BaseSymbolIndex + static_cast<uint32_t>(mSymbolMap.size());
+      symbol->name = name;
+      mSymbolMap.emplace(name, std::move(symbol));
+   }
+
+   void
+   registerTypeInfo(LibraryTypeInfo &&typeInfo)
+   {
+      mTypeInfo.emplace_back(std::move(typeInfo));
+   }
+
+   void
+   setEntryPointSymbolName(const std::string& name)
+   {
+      mEntryPointSymbolName = name;
+   }
+
 protected:
    virtual void
    registerSymbols() = 0;
@@ -223,84 +229,6 @@ protected:
    void
    generateRpl();
 
-   template<typename FunctionType, FunctionType Fn>
-   void
-   registerFunctionInternal(const char *name,
-                            virt_func_ptr<typename std::remove_pointer<FunctionType>::type> &hostPtr)
-   {
-      auto symbol = internal::makeLibraryFunction<FunctionType, Fn>(name);
-      symbol->exported = false;
-      symbol->hostPtr = reinterpret_cast<virt_ptr<void> *>(&hostPtr);
-      registerSymbol(name, std::move(symbol));
-   }
-
-   template<typename FunctionType, FunctionType Fn>
-   void
-   registerFunctionExport(const char *name)
-   {
-      auto symbol = internal::makeLibraryFunction<FunctionType, Fn>(name);
-      symbol->exported = true;
-      registerSymbol(name, std::move(symbol));
-   }
-
-   template<typename DataType>
-   void
-   registerDataInternal(const char *name,
-                        virt_ptr<DataType> &data)
-   {
-      auto symbol = std::make_unique<LibraryData>();
-      symbol->exported = false;
-      symbol->hostPointer = reinterpret_cast<virt_ptr<void> *>(&data);
-      symbol->constructor = [](void *ptr) { new (ptr) DataType(); };
-      symbol->size = sizeof(DataType);
-      symbol->align = alignof(DataType);
-      registerSymbol(name, std::move(symbol));
-   }
-
-   template<typename DataType>
-   void
-   registerDataExport(const char *name,
-                      virt_ptr<DataType> &data)
-   {
-      auto symbol = std::make_unique<LibraryData>();
-      symbol->exported = true;
-      symbol->hostPointer = reinterpret_cast<virt_ptr<void> *>(&data);
-      symbol->constructor = [](void *ptr) { new (ptr) DataType(); };
-      symbol->size = sizeof(DataType);
-      symbol->align = alignof(DataType);
-      registerSymbol(name, std::move(symbol));
-   }
-
-   void
-   registerLibraryDependency(const char *name)
-   {
-      mLibraryDependencies.push_back(name);
-   }
-
-   void
-   registerSymbol(const char *name,
-                  std::unique_ptr<LibrarySymbol> symbol)
-   {
-      decaf_check(mSymbolMap.find(name) == mSymbolMap.end());
-      symbol->index = BaseSymbolIndex + static_cast<uint32_t>(mSymbolMap.size());
-      symbol->name = name;
-      mSymbolMap.emplace(name, std::move(symbol));
-   }
-
-   template<typename ObjectType>
-   void
-   registerTypeInfo(const char *typeName,
-                    std::vector<const char *> &&virtualTable,
-                    std::vector<const char *> &&baseTypes = {})
-   {
-      auto &typeInfo = mTypeInfo.emplace_back();
-      typeInfo.name = typeName;
-      typeInfo.virtualTable = std::move(virtualTable);
-      typeInfo.baseTypes = std::move(baseTypes);
-      typeInfo.hostVirtualTablePtr = &ObjectType::VirtualTable;
-      typeInfo.hostTypeDescriptorPtr = &ObjectType::TypeDescriptor;
-   }
-
 private:
    LibraryId mID;
    std::string mName;
@@ -309,6 +237,7 @@ private:
    std::vector<LibraryTypeInfo> mTypeInfo;
    std::vector<uint8_t> mGeneratedRpl;
    std::vector<UnimplementedLibraryFunction *> mUnimplementedFunctionExports;
+   std::string mEntryPointSymbolName;
 };
 
 virt_addr
@@ -320,3 +249,5 @@ setUnimplementedFunctionStubMemory(virt_ptr<void> base,
                                    uint32_t size);
 
 } // namespace cafe::hle
+
+#include "cafe_hle_library_register.h"

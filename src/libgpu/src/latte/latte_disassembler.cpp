@@ -1,8 +1,10 @@
-#include "latte/latte_instructions.h"
 #include "latte/latte_disassembler.h"
+#include "latte/latte_disassembler_state.h"
+
+#include "latte/latte_instructions.h"
 
 #include <common/decaf_assert.h>
-#include <fmt/format.h>
+#include <fmt/core.h>
 #include <gsl.h>
 
 namespace latte
@@ -242,7 +244,7 @@ disassemble(const gsl::span<const uint8_t> &binary,
 
    for (auto i = 0; i < binary.size(); i += sizeof(ControlFlowInst)) {
       auto cf = *reinterpret_cast<const ControlFlowInst *>(binary.data() + i);
-      auto id = cf.word1.CF_INST();
+      // cf.word1.CF_INST();
       auto type = cf.word1.CF_INST_TYPE();
 
       switch (type) {

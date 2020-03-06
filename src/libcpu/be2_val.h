@@ -476,13 +476,10 @@ private:
 namespace fmt
 {
 
-inline namespace v5
+inline namespace v6
 {
 template<typename Type, typename Char, typename Enabled>
 struct formatter;
-
-template<typename T, typename Char, typename Enable>
-struct convert_to_int;
 
 // Disable stream operator detection for be2_val
 namespace internal
@@ -497,30 +494,8 @@ class is_streamable<be2_val<T>, Char> : public std::false_type
 }
 }
 
-// Disable automatic conversion to int in fmtlib
-template<typename T, typename Char>
-struct convert_to_int<be2_val<T>, Char, void> : std::false_type
-{
-};
-
-// Provide a custom formatter for be2_val<T>
+// Custom formatter defined in cpu_formatters.h
 template<typename ValueType, typename Char>
-struct formatter<be2_val<ValueType>, Char, void>
-   : formatter<typename safe_underlying_type<ValueType>::type, Char, void>
-{
-   using value_type = typename safe_underlying_type<ValueType>::type;
-
-   template<typename ParseContext>
-   constexpr auto parse(ParseContext &ctx)
-   {
-      return formatter<value_type, Char, void>::parse(ctx);
-   }
-
-   template<typename FormatContext>
-   auto format(const be2_val<ValueType> &val, FormatContext &ctx)
-   {
-      return formatter<value_type, Char, void>::format(val, ctx);
-   }
-};
+struct formatter<be2_val<ValueType>, Char, void>;
 
 } // namespace fmt

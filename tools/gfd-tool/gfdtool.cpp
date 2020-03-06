@@ -3,14 +3,13 @@
 #include <cassert>
 #include <common/teenyheap.h>
 #include <excmd.h>
-#include <fmt/format.h>
+#include <fmt/core.h>
 #include <fstream>
 #include <gsl.h>
 #include <iostream>
 #include <libcpu/cpu.h>
 #include <libgfd/gfd.h>
-#include <libgpu/gpu_tiling.h>
-#include <libgpu/gpu7_tiling.h>
+#include <libgpu/gpu7_tiling_cpu.h>
 #include <libgpu/latte/latte_disassembler.h>
 #include <libgpu/latte/latte_formats.h>
 #include <libdecaf/src/cafe/libraries/gx2/gx2_debug_dds.h>
@@ -852,6 +851,7 @@ printInfo(const std::string &filename)
       }
    }
 
+   out.writer.push_back('\0');
    std::cout << out.writer.data();
    return true;
 }
@@ -889,18 +889,6 @@ getFileBasename(const std::string &filename)
    }
 }
 
-static std::string
-getExtension(const std::string &filename)
-{
-   auto start = filename.find_last_of('.');
-
-   if (start == std::string::npos) {
-      return {};
-   } else {
-      return filename.substr(start);
-   }
-}
-
 static bool
 convertTexture(const std::string &path)
 {
@@ -923,26 +911,22 @@ convertTexture(const std::string &path)
    for (auto &tex : file.textures) {
       auto format = static_cast<latte::SQ_DATA_FORMAT>(tex.surface.format & 0x3f);
       auto bpp = latte::getDataFormatBitsPerElement(format);
-      auto bytesPerElement = bpp / 8;
 
       // Fill out tiling surface information
       auto surface = gpu7::tiling::SurfaceDescription { };
-      surface.tileMode = static_cast<AddrTileMode>(tex.surface.tileMode);
-      surface.format = static_cast<AddrFormat>(format);
+      surface.tileMode = static_cast<gpu7::tiling::TileMode>(tex.surface.tileMode);
+      surface.format = static_cast<gpu7::tiling::DataFormat>(format);
       surface.bpp = bpp;
       surface.numSamples = 1u << static_cast<int>(tex.surface.aa);
       surface.width = tex.surface.width;
       surface.height = tex.surface.height;
       surface.numSlices = tex.surface.depth;
-      surface.flags.depth = !!(tex.surface.use & cafe::gx2::GX2SurfaceUse::DepthBuffer);
-      surface.flags.display = !!(tex.surface.use & cafe::gx2::GX2SurfaceUse::ScanBuffer);
-      surface.flags.volume = (tex.surface.dim == cafe::gx2::GX2SurfaceDim::Texture3D);
-      surface.flags.cube = (tex.surface.dim == cafe::gx2::GX2SurfaceDim::TextureCube);
-      surface.flags.inputBaseMap = 1u;
+      surface.use  = static_cast<gpu7::tiling::SurfaceUse>(tex.surface.use);
+      surface.dim = static_cast<gpu7::tiling::SurfaceDim>(tex.surface.dim);
       surface.numFrags = 0;
       surface.numLevels = tex.surface.mipLevels;
 
-      // Not sure if needed or not.
+      /* Not sure if needed or not.*/
       if (format >= latte::SQ_DATA_FORMAT::FMT_BC1 &&
           format <= latte::SQ_DATA_FORMAT::FMT_BC5) {
          surface.width = (surface.width + 3) / 4;
@@ -958,16 +942,30 @@ convertTexture(const std::string &path)
 
       // Untile image
       untiled.resize(tex.surface.image.size());
-      gpu7::tiling::untileImage(surface, tex.surface.image.data(),
-                                untiled.data());
+
+      auto surfaceInfo = gpu7::tiling::computeSurfaceInfo(surface, 0);
+      auto retileInfo = gpu7::tiling::computeRetileInfo(surfaceInfo);
+      gpu7::tiling::cpu::untile(retileInfo, untiled.data(),
+                                tex.surface.image.data(),
+                                0, surface.numSlices);
 
       // Unpitch image
       imageData.resize(gpu7::tiling::computeUnpitchedImageSize(surface));
       gpu7::tiling::unpitchImage(surface, untiled.data(), imageData.data());
 
       // Untile mipmaps
+      auto mipOffset = 0u;
       untiled.resize(tex.surface.mipmap.size());
-      gpu7::tiling::untileMipMap(surface, tex.surface.mipmap.data(), untiled.data());
+
+      for (auto i = 1u; i < surface.numLevels; ++i) {
+         auto mipSurfaceInfo = gpu7::tiling::computeSurfaceInfo(surface, i);
+         auto mipRetileInfo = gpu7::tiling::computeRetileInfo(mipSurfaceInfo);
+         mipOffset = align_up(mipOffset, mipSurfaceInfo.baseAlign);
+         gpu7::tiling::cpu::untile(mipRetileInfo, untiled.data() + mipOffset,
+                                   tex.surface.mipmap.data() + mipOffset,
+                                   0, surface.numSlices);
+         mipOffset += mipSurfaceInfo.surfSize;
+      }
 
       // Unpitch mipmaps
       mipMapData.resize(gpu7::tiling::computeUnpitchedMipMapSize(surface));

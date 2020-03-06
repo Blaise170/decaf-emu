@@ -7,15 +7,6 @@
 namespace cafe::gx2
 {
 
-inline uint32_t
-floatToFixedPoint(float value,
-                  uint32_t bits,
-                  float min,
-                  float max)
-{
-   return static_cast<uint32_t>((value - min) * (static_cast<float>(1 << bits) / (max - min)));
-}
-
 void
 GX2InitSampler(virt_ptr<GX2Sampler> sampler,
                GX2TexClampMode clampMode,
@@ -29,7 +20,7 @@ GX2InitSampler(virt_ptr<GX2Sampler> sampler,
       .XY_MIN_FILTER(static_cast<latte::SQ_TEX_XY_FILTER>(minMagFilterMode));
 
    sampler->regs.word1 = latte::SQ_TEX_SAMPLER_WORD1_N::get(0)
-      .MAX_LOD(ufixed_4_6_t::from_data(1023));
+      .MAX_LOD(fixed_from_data<ufixed_4_6_t>(1023));
 
    sampler->regs.word2 = latte::SQ_TEX_SAMPLER_WORD2_N::get(0)
       .TYPE(true);

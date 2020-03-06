@@ -7,6 +7,7 @@
 #include <common/strutils.h>
 #include <fmt/format.h>
 #include <fmt/printf.h>
+#include <libcpu/cpu_formatters.h>
 
 namespace cafe::coreinit
 {
@@ -54,7 +55,6 @@ formatStringV(virt_ptr<const char> fmt,
 {
    std::string flags, width, length, precision, formatter;
    auto args = list->begin();
-   auto fmtLen = strlen(fmt.get());
 
    for (auto i = 0; fmt[i]; ) {
       if (fmt[i] != '%') {

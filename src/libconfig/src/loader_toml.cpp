@@ -1,9 +1,90 @@
 #include "config_toml.h"
 
 #include <string>
+#include <optional>
 
 namespace config
 {
+
+static const char *
+translateDisplayBackend(gpu::DisplaySettings::Backend backend)
+{
+   if (backend == gpu::DisplaySettings::Null) {
+      return "null";
+   } else if (backend == gpu::DisplaySettings::Vulkan) {
+      return "vulkan";
+   }
+
+   return "";
+}
+
+static std::optional<gpu::DisplaySettings::Backend>
+translateDisplayBackend(const std::string &text)
+{
+   if (text == "null") {
+      return gpu::DisplaySettings::Null;
+   } else if (text == "vulkan") {
+      return gpu::DisplaySettings::Vulkan;
+   }
+
+   return { };
+}
+
+static const char *
+translateScreenMode(gpu::DisplaySettings::ScreenMode mode)
+{
+   if (mode == gpu::DisplaySettings::Windowed) {
+      return "windowed";
+   } else if (mode == gpu::DisplaySettings::Fullscreen) {
+      return "fullscreen";
+   }
+
+   return "";
+}
+
+static std::optional<gpu::DisplaySettings::ScreenMode>
+translateScreenMode(const std::string &text)
+{
+   if (text == "windowed") {
+      return gpu::DisplaySettings::Windowed;
+   } else if (text == "fullscreen") {
+      return gpu::DisplaySettings::Fullscreen;
+   }
+
+   return { };
+}
+
+static const char *
+translateViewMode(gpu::DisplaySettings::ViewMode mode)
+{
+   if (mode == gpu::DisplaySettings::TV) {
+      return "tv";
+   } else if (mode == gpu::DisplaySettings::Gamepad1) {
+      return "gamepad1";
+   } else if (mode == gpu::DisplaySettings::Gamepad2) {
+      return "gamepad2";
+   } else if (mode == gpu::DisplaySettings::Split) {
+      return "split";
+   }
+
+   return "";
+}
+
+static std::optional<gpu::DisplaySettings::ViewMode>
+translateViewMode(const std::string &text)
+{
+   if (text == "tv") {
+      return gpu::DisplaySettings::TV;
+   } else if (text == "gamepad1") {
+      return gpu::DisplaySettings::Gamepad1;
+   } else if (text == "gamepad2") {
+      return gpu::DisplaySettings::Gamepad2;
+   } else if (text == "split") {
+      return gpu::DisplaySettings::Split;
+   }
+
+   return { };
+}
 
 bool
 loadFromTOML(std::shared_ptr<cpptoml::table> config,
@@ -27,6 +108,7 @@ loadFromTOML(std::shared_ptr<cpptoml::table> config,
 {
    readValue(config, "debugger.enabled", decafSettings.debugger.enabled);
    readValue(config, "debugger.break_on_entry", decafSettings.debugger.break_on_entry);
+   readValue(config, "debugger.break_on_exit", decafSettings.debugger.break_on_exit);
    readValue(config, "debugger.gdb_stub", decafSettings.debugger.gdb_stub);
    readValue(config, "debugger.gdb_stub_port", decafSettings.debugger.gdb_stub_port);
 
@@ -43,11 +125,22 @@ loadFromTOML(std::shared_ptr<cpptoml::table> config,
    readValue(config, "log.to_file", decafSettings.log.to_file);
    readValue(config, "log.to_stdout", decafSettings.log.to_stdout);
 
+   auto logLevels = config->get_table_qualified("log.levels");
+   if (logLevels) {
+      decafSettings.log.levels.clear();
+      for (auto item : *logLevels) {
+         if (auto level = item.second->as<std::string>()) {
+            decafSettings.log.levels.emplace_back(item.first, level->get());
+         }
+      }
+   }
+
    readValue(config, "sound.dump_sounds", decafSettings.sound.dump_sounds);
 
    readValue(config, "system.region", decafSettings.system.region);
    readValue(config, "system.hfio_path", decafSettings.system.hfio_path);
    readValue(config, "system.mlc_path", decafSettings.system.mlc_path);
+   readValue(config, "system.otp_path", decafSettings.system.otp_path);
    readValue(config, "system.resources_path", decafSettings.system.resources_path);
    readValue(config, "system.sdcard_path", decafSettings.system.sdcard_path);
    readValue(config, "system.slc_path", decafSettings.system.slc_path);
@@ -55,6 +148,7 @@ loadFromTOML(std::shared_ptr<cpptoml::table> config,
    readValue(config, "system.time_scale", decafSettings.system.time_scale);
    readArray(config, "system.lle_modules", decafSettings.system.lle_modules);
    readValue(config, "system.dump_hle_rpl", decafSettings.system.dump_hle_rpl);
+   readArray(config, "system.title_directories", decafSettings.system.title_directories);
    return true;
 }
 
@@ -63,9 +157,47 @@ loadFromTOML(std::shared_ptr<cpptoml::table> config,
              gpu::Settings &gpuSettings)
 {
    readValue(config, "gpu.debug", gpuSettings.debug.debug_enabled);
-   readArray(config, "gpu.opengl_debug_filters", gpuSettings.opengl.debug_message_filters);
    readValue(config, "gpu.dump_shaders", gpuSettings.debug.dump_shaders);
    readValue(config, "gpu.dump_shader_binaries_only", gpuSettings.debug.dump_shader_binaries_only);
+
+   auto display = config->get_table("display");
+   if (display) {
+      if (auto text = display->get_as<std::string>("backend"); text) {
+         if (auto backend = translateDisplayBackend(*text); backend) {
+            gpuSettings.display.backend = *backend;
+         }
+      }
+
+      if (auto text = display->get_as<std::string>("screen_mode"); text) {
+         if (auto screenMode = translateScreenMode(*text); screenMode) {
+            gpuSettings.display.screenMode = *screenMode;
+         }
+      }
+
+      if (auto text = display->get_as<std::string>("view_mode"); text) {
+         if (auto viewMode = translateViewMode(*text); viewMode) {
+            gpuSettings.display.viewMode = *viewMode;
+         }
+      }
+
+      if (auto maintainAspectRatio = display->get_as<bool>("maintain_aspect_ratio"); maintainAspectRatio) {
+         gpuSettings.display.maintainAspectRatio = *maintainAspectRatio;
+      }
+
+      if (auto splitSeperation = display->get_as<double>("split_seperation"); splitSeperation) {
+         gpuSettings.display.splitSeperation = *splitSeperation;
+      }
+
+      if (auto backgroundColour = display->get_array_of<int64_t>("background_colour");
+          backgroundColour && backgroundColour->size() >= 3) {
+         gpuSettings.display.backgroundColour = {
+               static_cast<int>(backgroundColour->at(0)),
+               static_cast<int>(backgroundColour->at(1)),
+               static_cast<int>(backgroundColour->at(2))
+            };
+      }
+   }
+
    return true;
 }
 
@@ -108,6 +240,7 @@ saveToTOML(std::shared_ptr<cpptoml::table> config,
 
    debugger->insert("enabled", decafSettings.debugger.enabled);
    debugger->insert("break_on_entry", decafSettings.debugger.break_on_entry);
+   debugger->insert("break_on_exit", decafSettings.debugger.break_on_exit);
    debugger->insert("gdb_stub", decafSettings.debugger.gdb_stub);
    debugger->insert("gdb_stub_port", decafSettings.debugger.gdb_stub_port);
    config->insert("debugger", debugger);
@@ -137,6 +270,12 @@ saveToTOML(std::shared_ptr<cpptoml::table> config,
    log->insert("to_file", decafSettings.log.to_file);
    log->insert("to_stdout", decafSettings.log.to_stdout);
 
+   auto levels = cpptoml::make_table();
+   for (auto item : decafSettings.log.levels) {
+      levels->insert(item.first, item.second);
+   }
+   log->insert("levels", levels);
+
    auto hle_trace_filters = cpptoml::make_array();
    for (auto &filter : decafSettings.log.hle_trace_filters) {
       hle_trace_filters->push_back(filter);
@@ -163,6 +302,7 @@ saveToTOML(std::shared_ptr<cpptoml::table> config,
    system->insert("region", static_cast<int>(decafSettings.system.region));
    system->insert("hfio_path", decafSettings.system.hfio_path);
    system->insert("mlc_path", decafSettings.system.mlc_path);
+   system->insert("otp_path", decafSettings.system.otp_path);
    system->insert("resources_path", decafSettings.system.resources_path);
    system->insert("sdcard_path", decafSettings.system.sdcard_path);
    system->insert("slc_path", decafSettings.system.slc_path);
@@ -175,6 +315,14 @@ saveToTOML(std::shared_ptr<cpptoml::table> config,
    }
 
    system->insert("lle_modules", lle_modules);
+
+   auto title_directories = cpptoml::make_array();
+   for (auto &name : decafSettings.system.title_directories) {
+      title_directories->push_back(name);
+   }
+
+   system->insert("title_directories", title_directories);
+
    config->insert("system", system);
    return true;
 }
@@ -193,13 +341,27 @@ saveToTOML(std::shared_ptr<cpptoml::table> config,
    gpu->insert("dump_shaders", gpuSettings.debug.dump_shaders);
    gpu->insert("dump_shader_binaries_only", gpuSettings.debug.dump_shader_binaries_only);
 
-   auto debug_filters = cpptoml::make_array();
-   for (auto &filter : gpuSettings.opengl.debug_message_filters) {
-      debug_filters->push_back(filter);
+   config->insert("gpu", gpu);
+
+   // display
+   auto display = config->get_table("display");
+   if (!display) {
+      display = cpptoml::make_table();
    }
 
-   gpu->insert("opengl_debug_filters", debug_filters);
-   config->insert("gpu", gpu);
+   display->insert("backend", translateDisplayBackend(gpuSettings.display.backend));
+   display->insert("screen_mode", translateScreenMode(gpuSettings.display.screenMode));
+   display->insert("view_mode", translateViewMode(gpuSettings.display.viewMode));
+   display->insert("maintain_aspect_ratio", gpuSettings.display.maintainAspectRatio);
+   display->insert("split_seperation", gpuSettings.display.splitSeperation);
+
+   auto backgroundColour = cpptoml::make_array();
+   backgroundColour->push_back(gpuSettings.display.backgroundColour[0]);
+   backgroundColour->push_back(gpuSettings.display.backgroundColour[1]);
+   backgroundColour->push_back(gpuSettings.display.backgroundColour[2]);
+   display->insert("background_colour", backgroundColour);
+
+   config->insert("display", display);
    return true;
 }
 

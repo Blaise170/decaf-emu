@@ -5,11 +5,13 @@
 #include "cafe_kernel_process.h"
 
 #include "ios/mcp/ios_mcp_mcp_types.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 #include "cafe/libraries/cafe_hle.h"
 #include "cafe/loader/cafe_loader_globals.h"
 #include "cafe/loader/cafe_loader_loaded_rpl.h"
 
 #include <array>
+#include <libcpu/cpu_control.h>
 #include <libcpu/cpu_config.h>
 
 namespace cafe::kernel::internal
@@ -109,13 +111,23 @@ getCurrentRamPartitionData()
 RamPartitionId
 getCurrentRamPartitionId()
 {
-   return sCoreProcessData[cpu::this_core::id()].rampid;
+   auto core = cpu::this_core::id();
+   if (core == cpu::InvalidCoreId) {
+      core = 1;
+   }
+
+   return sCoreProcessData[core].rampid;
 }
 
 KernelProcessId
 getCurrentKernelProcessId()
 {
-   return getCurrentRamPartitionData()->coreKernelProcessId[cpu::this_core::id()];
+   auto core = cpu::this_core::id();
+   if (core == cpu::InvalidCoreId) {
+      core = 1;
+   }
+
+   return getCurrentRamPartitionData()->coreKernelProcessId[core];
 }
 
 UniqueProcessId
@@ -312,7 +324,7 @@ loadGameProcess(std::string_view rpx,
          if (shStrSection && sectionHeader->name) {
             auto name = shStrSection + sectionHeader->name;
             if (strcmp(name.get(), ".rodata") == 0) {
-               cpu::addJitReadOnlyRange(sectionAddress,
+               cpu::addJitReadOnlyRange(sectionAddress.getAddress(),
                                         sectionHeader->size);
                continue;
             }
@@ -322,7 +334,7 @@ loadGameProcess(std::string_view rpx,
             // TODO: Fix me
             // When we have a small section, e.g. .syscall section with
             // sectionHeader->size == 8, we seem to break binrec
-            //cpu::addJitReadOnlyRange(sectionAddress,
+            //cpu::addJitReadOnlyRange(sectionAddress.getAddress(),
             //                         sectionHeader->size);
          }
       }

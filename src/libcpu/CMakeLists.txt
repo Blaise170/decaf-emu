@@ -12,8 +12,8 @@ else()
     add_library(libcpu STATIC ${SOURCE_FILES} ${HEADER_FILES})
 endif()
 
-GroupSources(espresso)
-GroupSources(src)
+GroupSources("Header Files/expresso" espresso)
+GroupSources("Source Files" src)
 
 target_link_libraries(libcpu
     common
@@ -28,4 +28,11 @@ else()
         ${CMAKE_THREAD_LIBS_INIT})
 endif()
 
-enable_pch(libcpu)
+if(DECAF_PCH)
+    target_precompile_headers(libcpu
+      PRIVATE
+        <common/pch.h>
+    )
+
+    AutoGroupPCHFiles()
+endif()

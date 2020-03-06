@@ -6,6 +6,7 @@
 #include "gpu_memory.h"
 
 #include "latte/latte_endian.h"
+#include "latte/latte_enum_as_string.h"
 
 #include <common/decaf_assert.h>
 #include <common/log.h>
@@ -132,13 +133,10 @@ Driver::decafSwapBuffers(const latte::pm4::DecafSwapBuffers &data)
 
       // Update our debugging info every flip
       updateDebuggerInfo();
-   });
-}
 
-void
-Driver::decafCapSyncRegisters(const latte::pm4::DecafCapSyncRegisters &data)
-{
-   gpu::onSyncRegisters(mRegisters.data(), static_cast<uint32_t>(mRegisters.size()));
+      // Render the display!
+      renderDisplay();
+   });
 }
 
 void
@@ -413,8 +411,18 @@ Driver::eventWrite(const latte::pm4::EventWrite &data)
          mLastOccQuery = vk::QueryPool();
          mLastOccQueryAddr = nullptr;
       }
+   } else if (data.eventInitiator.EVENT_TYPE() == latte::VGT_EVENT_TYPE::CACHE_FLUSH) {
+      // This should flush all GPU-written data back to the CPU immediately.
+      decaf_check_warn_once(!"Use of VGT_EVENT_TYPE::CACHE_FLUSH");
+   } else if (data.eventInitiator.EVENT_TYPE() == latte::VGT_EVENT_TYPE::CACHE_FLUSH_AND_INV_EVENT) {
+      // This should flush all GPU-written data back to the CPU immediately
+      // and then invalidate all GPU caches of textures so they are re-read.
+      decaf_check_warn_once(!"Use of VGT_EVENT_TYPE::CACHE_FLUSH_AND_INV_EVENT");
+   } else if (data.eventInitiator.EVENT_TYPE() == latte::VGT_EVENT_TYPE::VS_PARTIAL_FLUSH) {
+      // This should flush all data out of VS-specific pipelines, such as stream-out.
+      decaf_check_warn_once(!"Use of VGT_EVENT_TYPE::VS_PARTIAL_FLUSH");
    } else {
-      decaf_abort("Unexpected eventWrite event type.");
+      gLog->warn("Unexpected eventWrite event type {}", latte::to_string(data.eventInitiator.EVENT_TYPE()));
    }
 }
 
@@ -540,13 +548,6 @@ Driver::surfaceSync(const latte::pm4::SurfaceSync &data)
 {
    // TODO: Handle surface syncs when using non-coherent surface optimizations.
 }
-
-void
-Driver::applyRegister(latte::Register reg)
-{
-   // Vulkan driver never directly applies register values
-}
-
 
 void
 Driver::executeBuffer(const gpu::ringbuffer::Buffer &buffer)

@@ -11,7 +11,9 @@
 #include "cafe_loader_minfileinfo.h"
 #include "cafe/cafe_stackobject.h"
 
+#include <array>
 #include <common/align.h>
+#include <libcpu/cpu_formatters.h>
 #include <zlib.h>
 
 namespace cafe::loader::internal
@@ -19,7 +21,7 @@ namespace cafe::loader::internal
 
 struct SegmentBounds
 {
-   uint32_t min = -1;
+   uint32_t min = 0xffffffffu;
    uint32_t max = 0;
    uint32_t allocMax = 0;
    const char *name = nullptr;
@@ -640,10 +642,10 @@ LiSetupOneRPL(kernel::UniqueProcessId upid,
       auto compressedRelocationsBuffer = virt_ptr<void> { nullptr };
       auto compressedRelocationsBufferSize = uint32_t { 0 };
       auto memoryAvailable = uint32_t { 0 };
-      auto tempSize = bounds.temp.max - bounds.temp.min;
-      auto dataSize = uint32_t { 0 };
       auto data = virt_ptr<void> { nullptr };
       auto readBytes = 0u;
+      tempSize = bounds.temp.max - bounds.temp.min;
+      dataSize = uint32_t { 0 };
 
       result = LiCacheLineCorrectAllocEx(codeHeapTracking,
                                          tempSize,
@@ -908,12 +910,13 @@ LOADER_Setup(kernel::UniqueProcessId upid,
 
    // Check input
    if (minFileInfo->dataSize) {
-      if (auto error = sValidateSetupParams(virt_cast<virt_addr>(minFileInfo->dataBuffer),
-                                            minFileInfo->dataSize,
-                                            minFileInfo->dataAlign,
-                                            globals->maxDataSize,
-                                            -470021,
-                                            "data")) {
+      error = sValidateSetupParams(virt_cast<virt_addr>(minFileInfo->dataBuffer),
+                                   minFileInfo->dataSize,
+                                   minFileInfo->dataAlign,
+                                   globals->maxDataSize,
+                                   -470021,
+                                   "data");
+      if (error) {
          LiSetFatalError(0x18729Bu, rpl->fileType, 1, "LOADER_Setup", 2283);
          LiCloseBufferIfError();
          return error;
@@ -921,12 +924,13 @@ LOADER_Setup(kernel::UniqueProcessId upid,
    }
 
    if (minFileInfo->loadSize) {
-      if (auto error = sValidateSetupParams(virt_cast<virt_addr>(minFileInfo->loadBuffer),
-                                            minFileInfo->loadSize,
-                                            minFileInfo->loadAlign,
-                                            globals->maxDataSize,
-                                            -470048,
-                                            "loader_info")) {
+      error = sValidateSetupParams(virt_cast<virt_addr>(minFileInfo->loadBuffer),
+                                   minFileInfo->loadSize,
+                                   minFileInfo->loadAlign,
+                                   globals->maxDataSize,
+                                   -470048,
+                                   "loader_info");
+      if (error) {
          LiSetFatalError(0x18729Bu, rpl->fileType, 1, "LOADER_Setup", 2300);
          LiCloseBufferIfError();
          return error;
@@ -936,10 +940,11 @@ LOADER_Setup(kernel::UniqueProcessId upid,
    // Perform setup
    rpl->dataBuffer = minFileInfo->dataBuffer;
    rpl->loadBuffer = minFileInfo->loadBuffer;
-   if (auto error = LiSetupOneRPL(upid,
-                                  rpl,
-                                  globals->processCodeHeap,
-                                  globals->processCodeHeap)) {
+   error = LiSetupOneRPL(upid,
+                         rpl,
+                         globals->processCodeHeap,
+                         globals->processCodeHeap);
+   if (error) {
       rpl->dataBuffer = nullptr;
       rpl->loadBuffer = nullptr;
       LiCloseBufferIfError();
@@ -947,25 +952,28 @@ LOADER_Setup(kernel::UniqueProcessId upid,
    }
 
    // Do queries
-   if (auto error = LOADER_GetSecInfo(upid, handle,
-                                      minFileInfo->outNumberOfSections,
-                                      minFileInfo->outSectionInfo)) {
+   error = LOADER_GetSecInfo(upid, handle,
+                             minFileInfo->outNumberOfSections,
+                             minFileInfo->outSectionInfo);
+   if (error) {
       LiCloseBufferIfError();
       return error;
    }
 
-   if (auto error = LOADER_GetFileInfo(upid, handle,
-                                       minFileInfo->outSizeOfFileInfo,
-                                       minFileInfo->outFileInfo,
-                                       nullptr, nullptr)) {
+   error = LOADER_GetFileInfo(upid, handle,
+                              minFileInfo->outSizeOfFileInfo,
+                              minFileInfo->outFileInfo,
+                              nullptr, nullptr);
+   if (error) {
       LiCloseBufferIfError();
       return error;
    }
 
-   if (auto error = LOADER_GetPathString(upid, handle,
-                                         minFileInfo->outPathStringSize,
-                                         minFileInfo->pathStringBuffer,
-                                         minFileInfo->outFileInfo)) {
+   error = LOADER_GetPathString(upid, handle,
+                                minFileInfo->outPathStringSize,
+                                minFileInfo->pathStringBuffer,
+                                minFileInfo->outFileInfo);
+   if (error) {
       LiCloseBufferIfError();
       return error;
    }

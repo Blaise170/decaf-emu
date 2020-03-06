@@ -22,21 +22,25 @@ target_include_directories(decaf-sdl PRIVATE
     ${SDL2_INCLUDE_DIRS})
 target_link_libraries(decaf-sdl
     common
-    common-sdl
     libconfig
-    libdebugui
     libdecaf
     cpptoml
     excmd
     ${SDL2_LIBRARIES})
 
-if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
-    target_link_libraries(decaf-sdl X11)
-endif()
-
 if(MSVC)
     set_target_properties(decaf-sdl PROPERTIES
         LINK_FLAGS "/SUBSYSTEM:WINDOWS")
+    target_link_libraries(decaf-sdl Setupapi)
+endif()
+
+if(DECAF_PCH)
+    target_precompile_headers(decaf-sdl
+      PRIVATE
+        <SDL.h>
+    )
+
+    AutoGroupPCHFiles()
 endif()
 
 install(TARGETS decaf-sdl RUNTIME DESTINATION "${DECAF_INSTALL_BINDIR}")

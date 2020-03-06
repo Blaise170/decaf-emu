@@ -2,415 +2,23 @@
 #include "clilog.h"
 #include "config.h"
 
+#include "replay_ringbuffer.h"
+#include "replay_parser_pm4.h"
+
 #include <array>
+#include <atomic>
 #include <fstream>
 #include <common/log.h>
 #include <common/platform_dir.h>
-#include <common-sdl/decafsdl_config.h>
-#include <common-sdl/decafsdl_opengl.h>
-#include <common-sdl/decafsdl_vulkan.h>
-#include <libcpu/mmu.h>
-#include <libcpu/be2_struct.h>
-#include <libdecaf/decaf.h>
-#include <libdecaf/decaf_nullinputdriver.h>
-#include <libdecaf/decaf_pm4replay.h>
-#include <libdecaf/src/cafe/cafe_tinyheap.h>
-#include <libgpu/gpu.h>
+#include <future>
 #include <libgpu/gpu_config.h>
-#include <libgpu/gpu_ringbuffer.h>
-#include <libgpu/latte/latte_registers.h>
-#include <libgpu/latte/latte_pm4.h>
-#include <libgpu/latte/latte_pm4_commands.h>
-#include <libgpu/latte/latte_pm4_reader.h>
-#include <libgpu/latte/latte_pm4_writer.h>
-#include <libgpu/latte/latte_pm4_sizer.h>
+#include <SDL_syswm.h>
 
 using namespace latte::pm4;
 
-static phys_ptr<cafe::TinyHeapPhysical> sReplayHeap = nullptr;
+RingBuffer *sRingBuffer = nullptr; // eww is global because of onGpuInterrupt
 
-class RingBuffer
-{
-   static constexpr auto BufferSize = 0x1000000u;
-
-public:
-   RingBuffer()
-   {
-      auto allocPtr = phys_ptr<void> { nullptr };
-
-      TinyHeap_Alloc(sReplayHeap, BufferSize * 4, 0x100, &allocPtr);
-      mBuffer = phys_cast<uint32_t *>(allocPtr);
-      mSize = BufferSize;
-   }
-
-   void
-   clear()
-   {
-      decaf_check(mWritePosition == mSubmitPosition);
-      mWritePosition = 0u;
-      mSubmitPosition = 0u;
-   }
-
-   void
-   flushCommandBuffer()
-   {
-      gpu::ringbuffer::write({
-         mBuffer.getRawPointer() + mSubmitPosition,
-         mWritePosition - mSubmitPosition
-      });
-
-      mSubmitPosition = mWritePosition;
-   }
-
-   template<typename Type>
-   void
-   writePM4(const Type &value)
-   {
-      auto &ncValue = const_cast<Type &>(value);
-
-      // Calculate the total size this object will be
-      latte::pm4::PacketSizer sizer;
-      ncValue.serialise(sizer);
-      auto totalSize = sizer.getSize() + 1;
-
-      // Serialize the packet to the active command buffer
-      decaf_check(mWritePosition + totalSize < mSize);
-      auto writer = latte::pm4::PacketWriter {
-         mBuffer.getRawPointer(),
-         mWritePosition,
-         Type::Opcode,
-         totalSize
-      };
-      ncValue.serialise(writer);
-   }
-
-   void
-   writeBuffer(void *buffer, uint32_t numWords)
-   {
-      decaf_check(mWritePosition + numWords < mSize);
-      std::memcpy(mBuffer.getRawPointer() + mWritePosition, buffer, numWords * 4);
-      mWritePosition += numWords;
-   }
-
-private:
-   phys_ptr<uint32_t> mBuffer;
-   uint32_t mSize = 0u;
-   uint32_t mSubmitPosition = 0u;
-   uint32_t mWritePosition = 0u;
-};
-
-class PM4Parser
-{
-public:
-   PM4Parser(gpu::GraphicsDriver *driver) :
-      mGraphicsDriver(driver)
-   {
-      auto allocPtr = phys_ptr<void> { nullptr };
-      TinyHeap_Alloc(sReplayHeap,
-                     0x10000 * 4,
-                     0x100,
-                     &allocPtr);
-      mRegisterStorage = phys_cast<uint32_t *>(allocPtr);
-   }
-
-   bool open(const std::string &path)
-   {
-      mFile.open(path, std::ifstream::binary);
-
-      if (!mFile.is_open()) {
-         return false;
-      }
-
-      std::array<char, 4> magic;
-      mFile.read(magic.data(), 4);
-
-      if (magic != decaf::pm4::CaptureMagic) {
-         return false;
-      }
-
-      return true;
-   }
-
-   bool eof()
-   {
-      return mFile.eof();
-   }
-
-   bool readFrame()
-   {
-      std::vector<char> buffer;
-      auto foundSwap = false;
-
-      // Clear ringbuffer
-      mRingBuffer.clear();
-
-      while (!foundSwap) {
-         decaf::pm4::CapturePacket packet;
-         mFile.read(reinterpret_cast<char *>(&packet), sizeof(decaf::pm4::CapturePacket));
-
-         if (!mFile) {
-            return false;
-         }
-
-         switch (packet.type) {
-         case decaf::pm4::CapturePacket::CommandBuffer:
-         {
-            buffer.resize(packet.size);
-            mFile.read(buffer.data(), buffer.size());
-
-            if (!mFile) {
-               return false;
-            }
-
-            foundSwap |= handleCommandBuffer(buffer.data(), packet.size);
-            break;
-         }
-         case decaf::pm4::CapturePacket::RegisterSnapshot:
-         {
-            decaf_check((packet.size % 4) == 0);
-            auto numRegisters = packet.size / 4;
-            mFile.read(reinterpret_cast<char *>(mRegisterStorage.getRawPointer()), packet.size);
-
-            // Swap it into big endian, so we can write LOAD_ commands
-            for (auto i = 0u; i < numRegisters; ++i) {
-               mRegisterStorage[i] = byte_swap(mRegisterStorage[i]);
-            }
-
-            handleRegisterSnapshot(mRegisterStorage, numRegisters);
-            mRingBuffer.flushCommandBuffer();
-            break;
-         }
-         case decaf::pm4::CapturePacket::SetBuffer:
-         {
-            decaf::pm4::CaptureSetBuffer setBuffer;
-            mFile.read(reinterpret_cast<char *>(&setBuffer), sizeof(decaf::pm4::CaptureSetBuffer));
-
-            handleSetBuffer(setBuffer);
-            mRingBuffer.flushCommandBuffer();
-            break;
-         }
-         case decaf::pm4::CapturePacket::MemoryLoad:
-         {
-            decaf::pm4::CaptureMemoryLoad load;
-            mFile.read(reinterpret_cast<char *>(&load), sizeof(decaf::pm4::CaptureMemoryLoad));
-
-            if (!mFile) {
-               return false;
-            }
-
-            buffer.resize(packet.size - sizeof(decaf::pm4::CaptureMemoryLoad));
-            mFile.read(buffer.data(), buffer.size());
-
-            if (!mFile) {
-               return false;
-            }
-
-            handleMemoryLoad(load, buffer);
-            break;
-         }
-         default:
-            mFile.seekg(packet.size, std::ifstream::cur);
-         }
-      }
-
-      // Flush ringbuffer to gpu
-      mRingBuffer.flushCommandBuffer();
-      return foundSwap;
-   }
-
-private:
-   bool handleCommandBuffer(void *buffer, uint32_t sizeBytes)
-   {
-      auto numWords = sizeBytes / 4;
-      mRingBuffer.writeBuffer(buffer, numWords);
-      return scanCommandBuffer(buffer, numWords);
-   }
-
-   void handleSetBuffer(decaf::pm4::CaptureSetBuffer &setBuffer)
-   {
-      auto isTv = (setBuffer.type == decaf::pm4::CaptureSetBuffer::TvBuffer) ? 1u : 0u;
-
-      mRingBuffer.writePM4(DecafSetBuffer {
-         latte::pm4::ScanTarget::TV,
-         setBuffer.address,
-         setBuffer.bufferingMode,
-         setBuffer.width,
-         setBuffer.height
-      });
-   }
-
-   void handleRegisterSnapshot(phys_ptr<uint32_t> registers, uint32_t count)
-   {
-      // Enable loading of registers
-      auto LOAD_CONTROL = latte::CONTEXT_CONTROL_ENABLE::get(0)
-         .ENABLE_CONFIG_REG(true)
-         .ENABLE_CONTEXT_REG(true)
-         .ENABLE_ALU_CONST(true)
-         .ENABLE_BOOL_CONST(true)
-         .ENABLE_LOOP_CONST(true)
-         .ENABLE_RESOURCE(true)
-         .ENABLE_SAMPLER(true)
-         .ENABLE_CTL_CONST(true)
-         .ENABLE_ORDINAL(true);
-
-      auto SHADOW_ENABLE = latte::CONTEXT_CONTROL_ENABLE::get(0);
-
-      mRingBuffer.writePM4(ContextControl {
-         LOAD_CONTROL,
-         SHADOW_ENABLE
-      });
-
-      // Write all the register load packets!
-      static std::pair<uint32_t, uint32_t>
-      LoadConfigRange[] = { { 0, (latte::Register::ConfigRegisterEnd - latte::Register::ConfigRegisterBase) / 4 }, };
-
-      mRingBuffer.writePM4(LoadConfigReg {
-         phys_cast<phys_addr>(registers + (latte::Register::ConfigRegisterBase / 4)),
-         gsl::make_span(LoadConfigRange)
-      });
-
-      static std::pair<uint32_t, uint32_t>
-      LoadContextRange[] = { { 0, (latte::Register::ContextRegisterEnd - latte::Register::ContextRegisterBase) / 4 }, };
-
-      mRingBuffer.writePM4(LoadContextReg {
-         phys_cast<phys_addr>(registers + (latte::Register::ContextRegisterBase / 4)),
-         gsl::make_span(LoadContextRange)
-      });
-
-      static std::pair<uint32_t, uint32_t>
-      LoadAluConstRange[] = { { 0, (latte::Register::AluConstRegisterEnd - latte::Register::AluConstRegisterBase) / 4 }, };
-
-      mRingBuffer.writePM4(LoadAluConst {
-         phys_cast<phys_addr>(registers + (latte::Register::AluConstRegisterBase / 4)),
-         gsl::make_span(LoadAluConstRange)
-      });
-
-      static std::pair<uint32_t, uint32_t>
-      LoadResourceRange[] = { { 0, (latte::Register::ResourceRegisterEnd - latte::Register::ResourceRegisterBase) / 4 }, };
-
-      mRingBuffer.writePM4(latte::pm4::LoadResource {
-         phys_cast<phys_addr>(registers + (latte::Register::ResourceRegisterBase / 4)),
-         gsl::make_span(LoadResourceRange)
-      });
-
-      static std::pair<uint32_t, uint32_t>
-      LoadSamplerRange[] = { { 0, (latte::Register::SamplerRegisterEnd - latte::Register::SamplerRegisterBase) / 4 }, };
-
-      mRingBuffer.writePM4(LoadSampler {
-         phys_cast<phys_addr>(registers + (latte::Register::SamplerRegisterBase / 4)),
-         gsl::make_span(LoadSamplerRange)
-      });
-
-      static std::pair<uint32_t, uint32_t>
-      LoadControlRange[] = { { 0, (latte::Register::ControlRegisterEnd - latte::Register::ControlRegisterBase) / 4 }, };
-
-      mRingBuffer.writePM4(LoadControlConst {
-         phys_cast<phys_addr>(registers + (latte::Register::ControlRegisterBase / 4)),
-         gsl::make_span(LoadControlRange)
-      });
-
-      static std::pair<uint32_t, uint32_t>
-      LoadLoopRange[] = { { 0, (latte::Register::LoopConstRegisterEnd - latte::Register::LoopConstRegisterBase) / 4 }, };
-
-      mRingBuffer.writePM4(LoadLoopConst {
-         phys_cast<phys_addr>(registers + (latte::Register::LoopConstRegisterBase / 4)),
-         gsl::make_span(LoadLoopRange)
-      });
-
-      static std::pair<uint32_t, uint32_t>
-      LoadBoolRange[] = { { 0, (latte::Register::BoolConstRegisterEnd - latte::Register::BoolConstRegisterBase) / 4 }, };
-
-      mRingBuffer.writePM4(LoadLoopConst {
-         phys_cast<phys_addr>(registers + (latte::Register::BoolConstRegisterBase / 4)),
-         gsl::make_span(LoadBoolRange)
-      });
-   }
-
-   void handleMemoryLoad(decaf::pm4::CaptureMemoryLoad &load, std::vector<char> &data)
-   {
-      std::memcpy(phys_cast<void *>(load.address).getRawPointer(),
-                  data.data(), data.size());
-
-      mGraphicsDriver->notifyCpuFlush(load.address,
-                                      static_cast<uint32_t>(data.size()));
-   }
-
-   bool
-   scanType0(HeaderType0 header,
-             const gsl::span<be2_val<uint32_t>> &data)
-   {
-      return false;
-   }
-
-   bool
-   scanType3(HeaderType3 header,
-             const gsl::span<be2_val<uint32_t>> &data)
-   {
-      if (header.opcode() == IT_OPCODE::DECAF_SWAP_BUFFERS) {
-         return true;
-      }
-
-      if (header.opcode() == IT_OPCODE::INDIRECT_BUFFER ||
-          header.opcode() == IT_OPCODE::INDIRECT_BUFFER_PRIV) {
-         return scanCommandBuffer(phys_cast<void *>(phys_addr { data[0].value() }).getRawPointer(),
-                                  data[2]);
-      }
-
-      return false;
-   }
-
-   bool
-   scanCommandBuffer(void *words, uint32_t numWords)
-   {
-      auto buffer = reinterpret_cast<be2_val<uint32_t> *>(words);
-      auto foundSwap = false;
-
-      for (auto pos = size_t { 0u }; pos < numWords; ) {
-         auto header = Header::get(buffer[pos]);
-         auto size = size_t { 0u };
-
-         switch (header.type()) {
-         case PacketType::Type0:
-         {
-            auto header0 = HeaderType0::get(header.value);
-            size = header0.count() + 1;
-
-            decaf_check(pos + size < numWords);
-            foundSwap |= scanType0(header0, gsl::make_span(buffer + pos + 1, size));
-            break;
-         }
-         case PacketType::Type3:
-         {
-            auto header3 = HeaderType3::get(header.value);
-            size = header3.size() + 1;
-
-            decaf_check(pos + size < numWords);
-            foundSwap |= scanType3(header3, gsl::make_span(buffer + pos + 1, size));
-            break;
-         }
-         case PacketType::Type2:
-         {
-            // This is a filler packet, like a "nop", ignore it
-            break;
-         }
-         case PacketType::Type1:
-         default:
-            size = numWords;
-            break;
-         }
-
-         pos += size + 1;
-      }
-
-      return foundSwap;
-   }
-
-private:
-   gpu::GraphicsDriver *mGraphicsDriver = nullptr;
-   RingBuffer mRingBuffer;
-   std::ifstream mFile;
-   phys_ptr<uint32_t> mRegisterStorage = nullptr;
-};
+void initialiseRegisters(RingBuffer *ringBuffer);
 
 SDLWindow::~SDLWindow()
 {
@@ -428,183 +36,156 @@ SDLWindow::initCore()
 }
 
 bool
-SDLWindow::initGlGraphics()
+SDLWindow::initGraphics()
 {
-#ifdef DECAF_GL
-   mRenderer = new DecafSDLOpenGL();
-   if (!mRenderer->initialise(WindowWidth, WindowHeight, false)) {
-      gCliLog->error("Failed to create GL graphics window");
-      return false;
-   }
+   auto videoInitialised = false;
 
-   mRendererName = "GL";
-   return true;
-#else
-   decaf_abort("GL support was not included in this build");
+#ifdef SDL_VIDEO_DRIVER_X11
+   if (!videoInitialised) {
+      videoInitialised = SDL_VideoInit("x11") == 0;
+      if (!videoInitialised) {
+         gCliLog->error("Failed to initialize SDL Video with x11: {}", SDL_GetError());
+      }
+   }
 #endif
-}
 
-bool
-SDLWindow::initVulkanGraphics()
-{
-#ifdef DECAF_VULKAN
-   mRenderer = new DecafSDLVulkan();
-   if (!mRenderer->initialise(WindowWidth, WindowHeight, false)) {
-      gCliLog->error("Failed to create Vulkan graphics window");
-      return false;
+#ifdef SDL_VIDEO_DRIVER_WAYLAND
+   if (!videoInitialised) {
+      videoInitialised = SDL_VideoInit("wayland") == 0;
+      if (!videoInitialised) {
+         gCliLog->error("Failed to initialize SDL Video with wayland: {}", SDL_GetError());
+      }
    }
-
-   mRendererName = "Vulkan";
-   return true;
-#else
-   decaf_abort("Vulkan support was not included in this build");
 #endif
-}
 
-void
-SDLWindow::calculateScreenViewports(Viewport &tv, Viewport &drc)
-{
-   int TvWidth = 1280;
-   int TvHeight = 720;
-
-   int DrcWidth = 854;
-   int DrcHeight = 480;
-
-   int OuterBorder = 0;
-   int ScreenSeparation = 5;
-
-   int windowWidth, windowHeight;
-   int nativeHeight, nativeWidth;
-   int tvLeft, tvBottom, tvTop, tvRight;
-   int drcLeft, drcBottom, drcTop, drcRight;
-
-   auto tvVisible = true;
-   auto drcVisible = true;
-
-   mRenderer->getWindowSize(&windowWidth, &windowHeight);
-
-   if (config::display::layout == config::display::Toggle) {
-      // For toggle mode only one screen is visible at a time, so we calculate the
-      // screen position as if only the TV exists here
-      nativeHeight = TvHeight;
-      nativeWidth = TvWidth;
-      DrcWidth = 0;
-      DrcHeight = 0;
-      ScreenSeparation = 0;
-   } else {
-      nativeHeight = DrcHeight + TvHeight + ScreenSeparation + 2 * OuterBorder;
-      nativeWidth = std::max(DrcWidth, TvWidth) + 2 * OuterBorder;
-   }
-
-   if (windowWidth * nativeHeight >= windowHeight * nativeWidth) {
-      // Align to height
-      int drcBorder = (windowWidth * nativeHeight - windowHeight * DrcWidth + nativeHeight) / nativeHeight / 2;
-      int tvBorder = config::display::stretch ? 0 : (windowWidth * nativeHeight - windowHeight * TvWidth + nativeHeight) / nativeHeight / 2;
-
-      drcBottom = OuterBorder;
-      drcTop = OuterBorder + (DrcHeight * windowHeight + nativeHeight / 2) / nativeHeight;
-      drcLeft = drcBorder;
-      drcRight = windowWidth - drcBorder;
-
-      tvBottom = windowHeight - OuterBorder - (TvHeight * windowHeight + nativeHeight / 2) / nativeHeight;
-      tvTop = windowHeight - OuterBorder;
-      tvLeft = tvBorder;
-      tvRight = windowWidth - tvBorder;
-   } else {
-      // Align to width
-      int heightBorder = (windowHeight * nativeWidth - windowWidth * (DrcHeight + TvHeight + ScreenSeparation) + nativeWidth) / nativeWidth / 2;
-      int drcBorder = (windowWidth - DrcWidth * windowWidth / nativeWidth + 1) / 2;
-      int tvBorder = (windowWidth - TvWidth * windowWidth / nativeWidth + 1) / 2;
-
-      drcBottom = heightBorder;
-      drcTop = heightBorder + (DrcHeight * windowWidth + nativeWidth / 2) / nativeWidth;
-      drcLeft = drcBorder;
-      drcRight = windowWidth - drcBorder;
-
-      tvTop = windowHeight - heightBorder;
-      tvBottom = windowHeight - heightBorder - (TvHeight * windowWidth + nativeWidth / 2) / nativeWidth;
-      tvLeft = tvBorder;
-      tvRight = windowWidth - tvBorder;
-   }
-
-   if (config::display::layout == config::display::Toggle) {
-      // In toggle mode, DRC and TV size are the same
-      drcLeft = tvLeft;
-      drcRight = tvRight;
-      drcTop = tvTop;
-      drcBottom = tvBottom;
-
-      if (mToggleDRC) {
-         drcVisible = true;
-         tvVisible = false;
-      } else {
-         drcVisible = false;
-         tvVisible = true;
+   if (!videoInitialised) {
+      if (SDL_VideoInit(NULL) != 0) {
+         gCliLog->error("Failed to initialize SDL Video: {}", SDL_GetError());
+         return false;
       }
    }
 
-   if (drcVisible) {
-      drc.x = static_cast<float>(drcLeft);
-      drc.y = static_cast<float>(drcBottom);
-      drc.width = static_cast<float>(drcRight - drcLeft);
-      drc.height = static_cast<float>(drcTop - drcBottom);
-   } else {
-      drc.x = 0.0f;
-      drc.y = 0.0f;
-      drc.width = 0.0f;
-      drc.height = 0.0f;
+   gCliLog->info("Using SDL video driver {}", SDL_GetCurrentVideoDriver());
+
+   mGraphicsDriver = gpu::createGraphicsDriver();
+   if (!mGraphicsDriver) {
+      return false;
    }
 
-   if (tvVisible) {
-      tv.x = static_cast<float>(tvLeft);
-      tv.y = static_cast<float>(tvBottom);
-      tv.width = static_cast<float>(tvRight - tvLeft);
-      tv.height = static_cast<float>(tvTop - tvBottom);
-   } else {
-      tv.x = 0.0f;
-      tv.y = 0.0f;
-      tv.width = 0.0f;
-      tv.height = 0.0f;
+   switch (mGraphicsDriver->type()) {
+   case gpu::GraphicsDriverType::Vulkan:
+      mRendererName = "Vulkan";
+      break;
+   case gpu::GraphicsDriverType::Null:
+      mRendererName = "Null";
+      break;
+   default:
+      mRendererName = "Unknown";
    }
 
-   decaf_check(drc.x >= 0);
-   decaf_check(drc.y >= 0);
-   decaf_check(drc.x + drc.width <= windowWidth);
-   decaf_check(drc.y + drc.height <= windowHeight);
-   decaf_check(tv.x >= 0);
-   decaf_check(tv.y >= 0);
-   decaf_check(tv.x + tv.width <= windowWidth);
-   decaf_check(tv.y + tv.height <= windowHeight);
+   return true;
+}
+
+static void
+onGpuInterrupt()
+{
+   auto entries = gpu::ih::read();
+   sRingBuffer->onGpuInterrupt();
 }
 
 bool
 SDLWindow::run(const std::string &tracePath)
 {
-   auto shouldQuit = false;
+   std::atomic_bool shouldQuit = false;
 
-   // Setup replay heap
-   sReplayHeap = phys_cast<cafe::TinyHeapPhysical *>(phys_addr { 0x34000000 });
-   cafe::TinyHeap_Setup(sReplayHeap,
+   // Setup some basic window stuff
+   mWindow =
+      SDL_CreateWindow("pm4-replay",
+                       SDL_WINDOWPOS_UNDEFINED,
+                       SDL_WINDOWPOS_UNDEFINED,
+                       WindowWidth, WindowHeight,
+                       SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE);
+
+   if (gpu::config()->display.screenMode == gpu::DisplaySettings::Fullscreen) {
+      SDL_SetWindowFullscreen(mWindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
+   }
+
+   // Setup graphics driver
+   auto wsi = gpu::WindowSystemInfo { };
+   auto sysWmInfo = SDL_SysWMinfo { };
+   SDL_VERSION(&sysWmInfo.version);
+   if (!SDL_GetWindowWMInfo(mWindow, &sysWmInfo)) {
+      gCliLog->error("SDL_GetWindowWMInfo failed: {}", SDL_GetError());
+   }
+
+   switch (sysWmInfo.subsystem) {
+#ifdef SDL_VIDEO_DRIVER_WINDOWS
+   case SDL_SYSWM_WINDOWS:
+      wsi.type = gpu::WindowSystemType::Windows;
+      wsi.renderSurface = static_cast<void *>(sysWmInfo.info.win.window);
+      break;
+#endif
+#ifdef SDL_VIDEO_DRIVER_X11
+   case SDL_SYSWM_X11:
+      wsi.type = gpu::WindowSystemType::X11;
+      wsi.renderSurface = reinterpret_cast<void *>(sysWmInfo.info.x11.window);
+      wsi.displayConnection = static_cast<void *>(sysWmInfo.info.x11.display);
+      break;
+#endif
+#ifdef SDL_VIDEO_DRIVER_COCOA
+   case SDL_SYSWM_COCOA:
+      wsi.type = gpu::WindowSystemType::Cocoa;
+      wsi.renderSurface = static_cast<void *>(sysWmInfo.info.cocoa.window);
+      break;
+#endif
+#ifdef SDL_VIDEO_DRIVER_WAYLAND
+   case SDL_SYSWM_WAYLAND:
+      wsi.type = gpu::WindowSystemType::Wayland;
+      wsi.renderSurface = static_cast<void *>(sysWmInfo.info.wl.surface);
+      wsi.displayConnection = static_cast<void *>(sysWmInfo.info.wl.display);
+      break;
+#endif
+   default:
+      decaf_abort(fmt::format("Unsupported SDL window subsystem {}", sysWmInfo.subsystem));
+   }
+
+   mGraphicsDriver->setWindowSystemInfo(wsi);
+
+   // Setup replay parser
+   auto replayHeap = phys_cast<cafe::TinyHeapPhysical *>(phys_addr { 0x34000000 });
+   cafe::TinyHeap_Setup(replayHeap,
                         0x430,
                         phys_cast<void *>(phys_addr { 0x34000000 + 0x430 }),
                         0x1C000000 - 0x430);
+   auto ringBuffer = std::make_unique<RingBuffer>(replayHeap);
+   sRingBuffer = ringBuffer.get();
 
-   // Setup graphics driver
-   auto graphicsDriver = mRenderer->getDecafDriver();
-   decaf::setGraphicsDriver(graphicsDriver);
+   initialiseRegisters(ringBuffer.get());
 
-   // Run the loop!
-   PM4Parser parser { graphicsDriver };
-
-   if (!parser.open(tracePath)) {
+   auto parser = ReplayParserPM4::Create(mGraphicsDriver, ringBuffer.get(),
+                                         replayHeap, tracePath);
+   if (!parser) {
       return false;
    }
 
-   // Set swap interval to 1 otherwise frames will render super fast!
-   SDL_GL_SetSwapInterval(1);
+   gpu::ih::enable(latte::CP_INT_CNTL::get(0xFFFFFFFF));
+   gpu::ih::setInterruptCallback(onGpuInterrupt);
 
-   while (!shouldQuit && !decaf::hasExited()) {
-      SDL_Event event;
+   auto loopReplay = true;
+   auto replayThread = std::thread {
+      [&]() {
+         do {
+            parser->runUntilTimestamp(0xFFFFFFFFFFFFFFFFull);
+         } while (loopReplay && !shouldQuit);
+      } };
+
+   auto graphicsThread = std::thread {
+      [&]() {
+         mGraphicsDriver->run();
+      } };
+
+   while (!shouldQuit) {
+      auto event = SDL_Event { };
 
       while (SDL_PollEvent(&event)) {
          switch (event.type) {
@@ -625,15 +206,409 @@ SDLWindow::run(const std::string &tracePath)
          }
       }
 
-      if (parser.eof() || !parser.readFrame()) {
-         shouldQuit = true;
-         break;
-      }
-
-      Viewport tvViewport, drcViewport;
-      calculateScreenViewports(tvViewport, drcViewport);
-      mRenderer->renderFrame(tvViewport, drcViewport);
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
    }
 
+   // We have to wait until replay is finished...
+   replayThread.join();
+
+   mGraphicsDriver->stop();
+   graphicsThread.join();
    return true;
+}
+
+void initialiseRegisters(RingBuffer *ringBuffer)
+{
+   // Straight copied from gx2
+
+   std::array<uint32_t, 24> zeroes;
+   zeroes.fill(0);
+
+   uint32_t values28030_28034[] = {
+      latte::PA_SC_SCREEN_SCISSOR_TL::get(0).value,
+      latte::PA_SC_SCREEN_SCISSOR_BR::get(0)
+         .BR_X(8192)
+         .BR_Y(8192).value
+   };
+
+   ringBuffer->writePM4(latte::pm4::SetContextRegs {
+      latte::Register::PA_SC_SCREEN_SCISSOR_TL,
+      gsl::make_span(values28030_28034)
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::PA_SC_LINE_CNTL,
+      latte::PA_SC_LINE_CNTL::get(0)
+         .value
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::PA_SU_VTX_CNTL,
+      latte::PA_SU_VTX_CNTL::get(0)
+         .PIX_CENTER(latte::PA_SU_VTX_CNTL_PIX_CENTER::OGL)
+         .ROUND_MODE(latte::PA_SU_VTX_CNTL_ROUND_MODE::TRUNCATE)
+         .QUANT_MODE(latte::PA_SU_VTX_CNTL_QUANT_MODE::QUANT_1_256TH)
+         .value
+                         });
+
+   // PA_CL_POINT_X_RAD, PA_CL_POINT_Y_RAD, PA_CL_POINT_POINT_SIZE, PA_CL_POINT_POINT_CULL_RAD
+   ringBuffer->writePM4(latte::pm4::SetContextRegs {
+      latte::Register::PA_CL_POINT_X_RAD,
+      gsl::make_span(zeroes.data(), 4)
+                         });
+
+   // PA_CL_UCP_0_X ... PA_CL_UCP_5_W
+   ringBuffer->writePM4(latte::pm4::SetContextRegs {
+      latte::Register::PA_CL_UCP_0_X,
+      gsl::make_span(zeroes.data(), 24)
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::PA_CL_VTE_CNTL,
+      latte::PA_CL_VTE_CNTL::get(0)
+         .VPORT_X_SCALE_ENA(true)
+         .VPORT_X_OFFSET_ENA(true)
+         .VPORT_Y_SCALE_ENA(true)
+         .VPORT_Y_OFFSET_ENA(true)
+         .VPORT_Z_SCALE_ENA(true)
+         .VPORT_Z_OFFSET_ENA(true)
+         .VTX_W0_FMT(true)
+         .value
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::PA_CL_NANINF_CNTL,
+      latte::PA_CL_NANINF_CNTL::get(0)
+         .value
+                         });
+
+   uint32_t values28200_28208[] = {
+      0,
+      latte::PA_SC_WINDOW_SCISSOR_TL::get(0)
+         .WINDOW_OFFSET_DISABLE(true)
+         .value,
+      latte::PA_SC_WINDOW_SCISSOR_BR::get(0)
+         .BR_X(8192)
+         .BR_Y(8192)
+         .value,
+   };
+
+   ringBuffer->writePM4(latte::pm4::SetContextRegs {
+      latte::Register::PA_SC_WINDOW_OFFSET,
+      gsl::make_span(values28200_28208)
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::PA_SC_LINE_STIPPLE,
+      latte::PA_SC_LINE_STIPPLE::get(0)
+      .value
+                         });
+
+   uint32_t values28A0C_28A10[] = {
+      latte::PA_SC_MPASS_PS_CNTL::get(0)
+         .value,
+      latte::PA_SC_MODE_CNTL::get(0)
+         .MSAA_ENABLE(true)
+         .FORCE_EOV_CNTDWN_ENABLE(true)
+         .FORCE_EOV_REZ_ENABLE(true)
+         .value
+   };
+
+   ringBuffer->writePM4(latte::pm4::SetContextRegs {
+      latte::Register::PA_SC_LINE_STIPPLE,
+      gsl::make_span(values28A0C_28A10)
+                         });
+
+   uint32_t values28250_28254[] = {
+      latte::PA_SC_VPORT_SCISSOR_0_TL::get(0)
+         .WINDOW_OFFSET_DISABLE(true)
+         .value,
+      latte::PA_SC_VPORT_SCISSOR_0_BR::get(0)
+         .BR_X(8192)
+         .BR_Y(8192)
+         .value,
+   };
+
+   ringBuffer->writePM4(latte::pm4::SetContextRegs {
+      latte::Register::PA_SC_VPORT_SCISSOR_0_TL,
+      gsl::make_span(values28250_28254)
+                         });
+
+   // TODO: Register 0x8B24 unknown
+   ringBuffer->writePM4(latte::pm4::SetConfigReg {
+      static_cast<latte::Register>(0x8B24),
+      0xFF3FFF
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::PA_SC_CLIPRECT_RULE,
+      latte::PA_SC_CLIPRECT_RULE::get(0)
+         .CLIP_RULE(0xFFFF)
+         .value
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetConfigReg {
+      latte::Register::VGT_GS_VERTEX_REUSE,
+      latte::VGT_GS_VERTEX_REUSE::get(0)
+         .VERT_REUSE(16)
+         .value
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::VGT_OUTPUT_PATH_CNTL,
+      latte::VGT_OUTPUT_PATH_CNTL::get(0)
+         .PATH_SELECT(latte::VGT_OUTPUT_PATH_SELECT::TESS_EN)
+         .value
+                         });
+
+   // TODO: This is an unknown value 16 * 0xb14(r31) * 0xb18(r31)
+   ringBuffer->writePM4(latte::pm4::SetConfigReg {
+      latte::Register::VGT_ES_PER_GS,
+      latte::VGT_ES_PER_GS::get(0)
+         .ES_PER_GS(16 * 1 * 1)
+         .value
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetConfigReg {
+      latte::Register::VGT_GS_PER_ES,
+      latte::VGT_GS_PER_ES::get(0)
+         .GS_PER_ES(256)
+         .value
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetConfigReg {
+      latte::Register::VGT_GS_PER_VS,
+      latte::VGT_GS_PER_VS::get(0)
+         .GS_PER_VS(4)
+         .value
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::VGT_INDX_OFFSET,
+      latte::VGT_INDX_OFFSET::get(0)
+         .INDX_OFFSET(0)
+         .value
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::VGT_REUSE_OFF,
+      latte::VGT_REUSE_OFF::get(0)
+         .REUSE_OFF(false)
+         .value
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::VGT_MULTI_PRIM_IB_RESET_EN,
+      latte::VGT_MULTI_PRIM_IB_RESET_EN::get(0)
+         .RESET_EN(true)
+         .value
+                         });
+
+   uint32_t values28C58_28C5C[] = {
+      latte::VGT_VERTEX_REUSE_BLOCK_CNTL::get(0)
+         .VTX_REUSE_DEPTH(14)
+         .value,
+      latte::VGT_OUT_DEALLOC_CNTL::get(0)
+         .DEALLOC_DIST(16)
+         .value,
+   };
+
+   ringBuffer->writePM4(latte::pm4::SetContextRegs {
+      latte::Register::VGT_VERTEX_REUSE_BLOCK_CNTL,
+      gsl::make_span(values28C58_28C5C)
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::VGT_HOS_REUSE_DEPTH,
+      latte::VGT_HOS_REUSE_DEPTH::get(0)
+         .REUSE_DEPTH(16)
+         .value
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::VGT_STRMOUT_DRAW_OPAQUE_OFFSET,
+      latte::VGT_STRMOUT_DRAW_OPAQUE_OFFSET::get(0)
+         .OFFSET(0)
+         .value
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::VGT_VTX_CNT_EN,
+      latte::VGT_VTX_CNT_EN::get(0)
+         .VTX_CNT_EN(false)
+         .value
+                         });
+
+   uint32_t values28400_28404[] = {
+      latte::VGT_MAX_VTX_INDX::get(0)
+         .MAX_INDX(-1)
+         .value,
+      latte::VGT_MIN_VTX_INDX::get(0)
+         .MIN_INDX(0)
+         .value
+   };
+
+   ringBuffer->writePM4(latte::pm4::SetContextRegs {
+      latte::Register::VGT_MAX_VTX_INDX,
+      gsl::make_span(values28400_28404)
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetConfigReg {
+      latte::Register::TA_CNTL_AUX,
+      latte::TA_CNTL_AUX::get(0)
+         .UNK0(true)
+         .SYNC_GRADIENT(true)
+         .SYNC_WALKER(true)
+         .SYNC_ALIGNER(true)
+         .value
+                         });
+
+   // TODO: Register 0x9714 unknown
+   ringBuffer->writePM4(latte::pm4::SetConfigReg {
+      static_cast<latte::Register>(0x9714),
+      1
+                         });
+
+   // TODO: Register 0x8D8C unknown
+   ringBuffer->writePM4(latte::pm4::SetConfigReg {
+      static_cast<latte::Register>(0x8D8C),
+      0x4000
+                         });
+
+   // SQ_ESTMP_RING_BASE ... SQ_REDUC_RING_SIZE
+   ringBuffer->writePM4(latte::pm4::SetConfigRegs {
+      latte::Register::SQ_ESTMP_RING_BASE,
+      gsl::make_span(zeroes.data(), 12)
+                         });
+
+   // SQ_ESTMP_RING_ITEMSIZE ... SQ_REDUC_RING_ITEMSIZE
+   ringBuffer->writePM4(latte::pm4::SetContextRegs {
+      latte::Register::SQ_ESTMP_RING_ITEMSIZE,
+      gsl::make_span(zeroes.data(), 6)
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetControlConstant {
+      latte::Register::SQ_VTX_START_INST_LOC,
+      latte::SQ_VTX_START_INST_LOC::get(0)
+         .OFFSET(0)
+         .value
+                         });
+
+   // SPI_FOG_CNTL ... SPI_FOG_FUNC_BIAS
+   ringBuffer->writePM4(latte::pm4::SetContextRegs {
+      latte::Register::SPI_FOG_CNTL,
+      gsl::make_span(zeroes.data(), 3)
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::SPI_INTERP_CONTROL_0,
+      latte::SPI_INTERP_CONTROL_0::get(0)
+         .FLAT_SHADE_ENA(true)
+         .PNT_SPRITE_ENA(false)
+         .PNT_SPRITE_OVRD_X(latte::SPI_PNT_SPRITE_SEL::SEL_S)
+         .PNT_SPRITE_OVRD_Y(latte::SPI_PNT_SPRITE_SEL::SEL_T)
+         .PNT_SPRITE_OVRD_Z(latte::SPI_PNT_SPRITE_SEL::SEL_0)
+         .PNT_SPRITE_OVRD_W(latte::SPI_PNT_SPRITE_SEL::SEL_1)
+         .PNT_SPRITE_TOP_1(true)
+         .value
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetConfigReg {
+      latte::Register::SPI_CONFIG_CNTL_1,
+      latte::SPI_CONFIG_CNTL_1::get(0)
+         .value
+                         });
+
+   // TODO: Register 0x286C8 unknown
+   ringBuffer->writePM4(latte::pm4::SetAllContextsReg {
+      static_cast<latte::Register>(0x286C8),
+      1
+                         });
+
+   // TODO: Register 0x28354 unknown
+   auto unkValue = 0u; // 0x143C(r31)
+
+   if (unkValue > 0x5270) {
+      ringBuffer->writePM4(latte::pm4::SetContextReg {
+         static_cast<latte::Register>(0x28354),
+         0xFF
+                            });
+   } else {
+      ringBuffer->writePM4(latte::pm4::SetContextReg {
+         static_cast<latte::Register>(0x28354),
+         0x1FF
+                            });
+   }
+
+   uint32_t values28D28_28D2C[] = {
+      latte::DB_SRESULTS_COMPARE_STATE0::get(0)
+         .value,
+      latte::DB_SRESULTS_COMPARE_STATE1::get(0)
+         .value
+   };
+
+   ringBuffer->writePM4(latte::pm4::SetContextRegs {
+      latte::Register::DB_SRESULTS_COMPARE_STATE0,
+      gsl::make_span(values28D28_28D2C)
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::DB_RENDER_OVERRIDE,
+      latte::DB_RENDER_OVERRIDE::get(0)
+         .value
+                         });
+
+   // TODO: Register 0x9830 unknown
+   ringBuffer->writePM4(latte::pm4::SetConfigReg {
+      static_cast<latte::Register>(0x9830),
+      0
+                         });
+
+   // TODO: Register 0x983C unknown
+   ringBuffer->writePM4(latte::pm4::SetConfigReg {
+      static_cast<latte::Register>(0x983C),
+      0x1000000
+                         });
+
+   uint32_t values28C30_28C3C[] = {
+      latte::CB_CLRCMP_CONTROL::get(0)
+         .CLRCMP_FCN_SEL(latte::CB_CLRCMP_SEL::SRC)
+         .value,
+      latte::CB_CLRCMP_SRC::get(0)
+         .CLRCMP_SRC(0)
+         .value,
+      latte::CB_CLRCMP_DST::get(0)
+         .CLRCMP_DST(0)
+         .value,
+      latte::CB_CLRCMP_MSK::get(0)
+         .CLRCMP_MSK(0xFFFFFFFF)
+         .value
+   };
+
+   ringBuffer->writePM4(latte::pm4::SetContextRegs {
+      latte::Register::CB_CLRCMP_CONTROL,
+      gsl::make_span(values28C30_28C3C)
+                         });
+
+   // TODO: Register 0x9A1C unknown
+   ringBuffer->writePM4(latte::pm4::SetConfigReg {
+      static_cast<latte::Register>(0x9A1C),
+      0
+                         });
+
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      latte::Register::PA_SC_AA_MASK,
+      latte::PA_SC_AA_MASK::get(0)
+         .AA_MASK_ULC(0xFF)
+         .AA_MASK_URC(0xFF)
+         .AA_MASK_LLC(0xFF)
+         .AA_MASK_LRC(0xFF)
+         .value
+                         });
+
+   // TODO: Register 0x28230 unknown
+   ringBuffer->writePM4(latte::pm4::SetContextReg {
+      static_cast<latte::Register>(0x28230),
+      0xAAAAAAAA
+                         });
 }

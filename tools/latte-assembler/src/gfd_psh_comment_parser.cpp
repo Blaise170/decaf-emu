@@ -1,5 +1,5 @@
 #include "gfd_comment_parser.h"
-#include <fmt/format.h>
+#include <fmt/core.h>
 
 static void
 parseRegisterValue(latte::SQ_PGM_RESOURCES_PS &reg,
@@ -200,7 +200,7 @@ parseRegisterValue(std::array<latte::SPI_PS_INPUT_CNTL_N, 32> &spi_ps_input_cntl
 
    if (member == "SEMANTIC") {
       spi_ps_input_cntls[index] = spi_ps_input_cntls[index]
-         .SEMANTIC(parseValueNumber(value));
+         .SEMANTIC(static_cast<uint8_t>(parseValueNumber(value)));
    } else if (member == "DEFAULT_VAL") {
       spi_ps_input_cntls[index] = spi_ps_input_cntls[index]
          .DEFAULT_VAL(parseValueNumber(value));

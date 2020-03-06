@@ -10,18 +10,11 @@ namespace vulkan
 {
 
 Driver::Driver()
-   : Pm4Processor(true)
 {
 }
 
 Driver::~Driver()
 {
-}
-
-gpu::GraphicsDriverType
-Driver::type()
-{
-   return gpu::GraphicsDriverType::Vulkan;
 }
 
 void
@@ -78,46 +71,51 @@ Driver::initialise(vk::Instance instance,
    // Initialize our GPU retiler
    mGpuRetiler.initialise(mDevice);
 
-   // Preconfigure some of our scratch buffers
-   mDirtyMemCaches.resize(8092);
-   mScratchImageInfos.resize(3 * 16);
-   mScratchBufferInfos.resize(3 * 16);
-   mScratchDescriptorWrites.resize(3 * 32);
-
    // Allocate a command pool to use
-   vk::CommandPoolCreateInfo commandPoolDesc;
-   commandPoolDesc.flags = vk::CommandPoolCreateFlagBits::eTransient | vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
-   commandPoolDesc.queueFamilyIndex = queueFamilyIndex;
-   mCommandPool = mDevice.createCommandPool(commandPoolDesc);
+   auto commandPoolCreateInfo = vk::CommandPoolCreateInfo { };
+   commandPoolCreateInfo.flags =
+      vk::CommandPoolCreateFlagBits::eTransient |
+      vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+   commandPoolCreateInfo.queueFamilyIndex = queueFamilyIndex;
+   mCommandPool = mDevice.createCommandPool(commandPoolCreateInfo);
 
    // Start our fence thread
-   mFenceThread = std::thread(std::bind(&Driver::fenceWaiterThread, this));
+   mFenceThread = std::thread { std::bind(&Driver::fenceWaiterThread, this) };
 
    // Set up the VMA
-   VmaAllocatorCreateInfo allocatorDesc = {};
-   allocatorDesc.physicalDevice = mPhysDevice;
-   allocatorDesc.device = mDevice;
-   CHECK_VK_RESULT(vmaCreateAllocator(&allocatorDesc, &mAllocator));
+   auto allocatorCreateInfo = VmaAllocatorCreateInfo { };
+   allocatorCreateInfo.physicalDevice = mPhysDevice;
+   allocatorCreateInfo.device = mDevice;
+   CHECK_VK_RESULT(vmaCreateAllocator(&allocatorCreateInfo, &mAllocator));
 
    // Set up the default pipeline layout and descriptor set
-   PipelineLayoutDesc basePlDesc;
+   auto basePlDesc = PipelineLayoutDesc { };
    memset(&basePlDesc, 0xFF, sizeof(basePlDesc));
    auto basePl = getPipelineLayout(basePlDesc);
    mBaseDescriptorSetLayout = basePl->descriptorLayout;
    mPipelineLayout = basePl->pipelineLayout;
 
    // Set up the pipeline cache
-   vk::PipelineCacheCreateInfo pipelineCacheDesc;
-   pipelineCacheDesc.flags = vk::PipelineCacheCreateFlags();
-   pipelineCacheDesc.pInitialData = nullptr;
-   pipelineCacheDesc.initialDataSize = 0;
-   mPipelineCache = mDevice.createPipelineCache(pipelineCacheDesc);
+   auto pipelineCacheCreateInfo = vk::PipelineCacheCreateInfo { };
+   pipelineCacheCreateInfo.flags = vk::PipelineCacheCreateFlags { };
+   pipelineCacheCreateInfo.pInitialData = nullptr;
+   pipelineCacheCreateInfo.initialDataSize = 0;
+   mPipelineCache = mDevice.createPipelineCache(pipelineCacheCreateInfo);
 
    initialiseBlankSampler();
    initialiseBlankImage();
    initialiseBlankBuffer();
 
    setupResources();
+}
+
+void
+Driver::destroy()
+{
+   mFenceSignal.notify_all();
+   mFenceThread.join();
+
+   destroyDisplayPipeline();
 }
 
 void
@@ -274,7 +272,7 @@ Driver::allocateDescriptorPool(uint32_t numDraws)
       std::vector<vk::DescriptorPoolSize> descriptorPoolSizes = {
          vk::DescriptorPoolSize(vk::DescriptorType::eSampler, latte::MaxSamplers * 3 * numDraws),
          vk::DescriptorPoolSize(vk::DescriptorType::eSampledImage, latte::MaxTextures * 3 * numDraws),
-         vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, latte::MaxAttribBuffers * 3 * numDraws),
+         vk::DescriptorPoolSize(vk::DescriptorType::eStorageBuffer, latte::MaxUniformBlocks * 3 * numDraws),
       };
 
       vk::DescriptorPoolCreateInfo descriptorPoolInfo;
@@ -360,33 +358,6 @@ Driver::retireOccQueryPool(vk::QueryPool pool)
 }
 
 void
-Driver::shutdown()
-{
-   mFenceSignal.notify_all();
-   mFenceThread.join();
-}
-
-void
-Driver::getSwapBuffers(vk::Image &tvImage, vk::ImageView &tvView, vk::Image &drcImage, vk::ImageView &drcView)
-{
-   if (mTvSwapChain && mTvSwapChain->presentable) {
-      tvImage = mTvSwapChain->image;
-      tvView = mTvSwapChain->imageView;
-   } else {
-      tvImage = vk::Image();
-      tvView = vk::ImageView();
-   }
-
-   if (mDrcSwapChain && mDrcSwapChain->presentable) {
-      drcImage = mDrcSwapChain->image;
-      drcView = mDrcSwapChain->imageView;
-   } else {
-      drcImage = vk::Image();
-      drcView = vk::ImageView();
-   }
-}
-
-void
 Driver::run()
 {
    while (mRunState == RunState::Running) {
@@ -402,13 +373,8 @@ Driver::run()
          executeBuffer(buffer);
       }
    }
-}
 
-void
-Driver::stop()
-{
-   mRunState = RunState::Stopped;
-   gpu::ringbuffer::wake();
+   destroy();
 }
 
 void
@@ -433,6 +399,13 @@ Driver::runUntilFlip()
          break;
       }
    }
+}
+
+void
+Driver::stop()
+{
+   mRunState = RunState::Stopped;
+   gpu::ringbuffer::wake();
 }
 
 void
@@ -560,7 +533,7 @@ Driver::getResourceUsageMeta(ResourceUsage usage)
    case ResourceUsage::StreamOutCounterRead:
       return { false,
                vk::AccessFlagBits::eTransformFeedbackCounterReadEXT,
-               vk::PipelineStageFlagBits::eTransformFeedbackEXT,
+               vk::PipelineStageFlagBits::eDrawIndirect,
                vk::ImageLayout::eUndefined };
    case ResourceUsage::ComputeSsboRead:
       return { false,

@@ -1,7 +1,9 @@
 #include "coreinit.h"
 #include "coreinit_memexpheap.h"
 #include "coreinit_memory.h"
+
 #include <common/log.h>
+#include <libcpu/cpu_formatters.h>
 
 namespace cafe::coreinit
 {
@@ -299,8 +301,6 @@ MEMCreateExpHeapEx(virt_ptr<void> base,
                    uint32_t size,
                    uint32_t flags)
 {
-   decaf_check(base);
-
    auto heapData = virt_cast<uint8_t *>(base);
    auto alignedStart = align_up(heapData, 4);
    auto alignedEnd = align_down(heapData + size, 4);
@@ -309,6 +309,8 @@ MEMCreateExpHeapEx(virt_ptr<void> base,
       // Not enough room for the header
       return nullptr;
    }
+
+   decaf_check(base);
 
    // Get our heap header
    auto heap = virt_cast<MEMExpHeap *>(alignedStart);
@@ -704,13 +706,13 @@ dumpExpandedHeap(virt_ptr<MEMExpHeap> heap)
 {
    internal::HeapLock lock { virt_addrof(heap->header) };
 
-   gLog->debug("MEMExpHeap(0x{:8x})", heap);
+   gLog->debug("MEMExpHeap({})", heap);
    gLog->debug("Status Address   Size       Group");
 
    for (auto block = heap->freeList.head; block; block = block->next) {
       auto attribs = static_cast<MEMExpHeapBlockAttribs>(block->attribs);
 
-      gLog->debug("FREE  0x{:8x} 0x{:8x} {:d}",
+      gLog->debug("FREE  {} 0x{:8x} {:d}",
                   block,
                   static_cast<uint32_t>(block->blockSize),
                   attribs.groupId());
@@ -719,7 +721,7 @@ dumpExpandedHeap(virt_ptr<MEMExpHeap> heap)
    for (auto block = heap->usedList.head; block; block = block->next) {
       auto attribs = static_cast<MEMExpHeapBlockAttribs>(block->attribs);
 
-      gLog->debug("USED  0x{:8x} 0x{:8x} {:d}",
+      gLog->debug("USED  {} 0x{:8x} {:d}",
                   block,
                   static_cast<uint32_t>(block->blockSize),
                   attribs.groupId());

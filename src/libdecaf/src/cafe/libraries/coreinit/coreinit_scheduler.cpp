@@ -16,12 +16,10 @@
 #include <common/decaf_assert.h>
 #include <common/log.h>
 #include <fmt/format.h>
+#include <libcpu/cpu_formatters.h>
 
 namespace cafe::coreinit
 {
-
-static constexpr uint32_t
-SchedulerLockNonCpuCoreId = 1u << 31;
 
 struct StaticSchedulerData
 {

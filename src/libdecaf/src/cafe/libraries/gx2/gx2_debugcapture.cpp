@@ -6,7 +6,7 @@
 #include "gx2_state.h"
 #include "gx2r_resource.h"
 
-#include "cafe/cafe_ppc_interface_invoke.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 #include "cafe/cafe_ppc_interface_varargs.h"
 #include "cafe/cafe_stackobject.h"
 #include "cafe/libraries/coreinit/coreinit_snprintf.h"
@@ -158,7 +158,7 @@ GX2DebugCaptureFrames(virt_ptr<const char> filename,
  * Only written when debug capture is enabled.
  */
 void
-GX2DebugTagUserString(GX2DebugUserTag tag,
+GX2DebugTagUserString(GX2DebugTag tag,
                       virt_ptr<const char> fmt,
                       var_args va)
 {
@@ -176,7 +176,7 @@ GX2DebugTagUserString(GX2DebugUserTag tag,
  * Only written when debug capture is enabled.
  */
 void
-GX2DebugTagUserStringVA(GX2DebugUserTag tag,
+GX2DebugTagUserStringVA(GX2DebugTag tag,
                         virt_ptr<const char> fmt,
                         virt_ptr<va_list> vaList)
 {
@@ -191,7 +191,6 @@ GX2DebugTagUserStringVA(GX2DebugUserTag tag,
       // Convert string to words!
       auto length = static_cast<uint32_t>(strlen(buffer.get()));
       auto numWords = align_up(length + 1, 4) / 4;
-      auto bufferWords = virt_cast<uint32_t *>(buffer);
 
       // Write NOP packet
       internal::writePM4(latte::pm4::NopBE {
@@ -329,6 +328,10 @@ void
 debugCaptureTagGroup(GX2DebugTag tagId,
                      std::string_view str)
 {
+   if (!sDebugCaptureData->enabled) {
+      return;
+   }
+
    auto id = tagId | GX2DebugTag::Group;
 
    if (str.empty()) {
@@ -337,7 +340,10 @@ debugCaptureTagGroup(GX2DebugTag tagId,
       std::vector<uint32_t> buffer;
       buffer.resize(align_up(str.size() + 1, 4) / 4, 0u);
       std::memcpy(buffer.data(), str.data(), str.size());
-      internal::writePM4(latte::pm4::Nop { id, { buffer.data(), buffer.size() } });
+      internal::writePM4(latte::pm4::NopBE {
+         id,
+         { reinterpret_cast<be2_val<uint32_t> *>(buffer.data()), buffer.size() }
+      });
    }
 }
 

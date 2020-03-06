@@ -96,9 +96,6 @@ Pm4Processor::handlePacketType3(HeaderType3 header, const gsl::span<uint32_t> &d
    case IT_OPCODE::DECAF_SWAP_BUFFERS:
       decafSwapBuffers(read<DecafSwapBuffers>(reader));
       break;
-   case IT_OPCODE::DECAF_CAP_SYNC_REGISTERS:
-      decafCapSyncRegisters(read<DecafCapSyncRegisters>(reader));
-      break;
    case IT_OPCODE::DECAF_CLEAR_COLOR:
       decafClearColor(read<DecafClearColor>(reader));
       break;
@@ -249,6 +246,7 @@ void Pm4Processor::nopPacket(const Nop &data)
 void
 Pm4Processor::indexType(const IndexType &data)
 {
+   mRegisters[latte::Register::VGT_INDEX_TYPE / 4] = data.type.value;
    mRegisters[latte::Register::VGT_DMA_INDEX_TYPE / 4] = data.type.value;
 }
 
@@ -276,56 +274,27 @@ void Pm4Processor::copyDw(const CopyDw &data)
 void Pm4Processor::shadowWrite(phys_ptr<uint32_t> memory,
                                    const gsl::span<uint32_t> &registers)
 {
-   // We intentionally did not vectorize this loop as it would incur the cost
-   // of doubling the amount of memory accesses we are doing (once to swap
-   // and then again to memcpy into CPU memory).  Instead we simply byteswap
-   // as we are copying the list over...
-
-   for (auto i = 0u; i < registers.size(); ++i) {
-      memory[i] = registers[i];
-   }
+   // Shadow memory is not byte-swapped
+   memcpy(memory.getRawPointer(), registers.data(), registers.size_bytes());
 }
 
 void
 Pm4Processor::setRegisters(latte::Register base,
                            const gsl::span<uint32_t> &values)
 {
-   if (mNoRegisterNotify) {
-      memcpy(&mRegisters[base / 4], values.data(), values.size_bytes());
-
-      if (latte::Register::SQ_VTX_SEMANTIC_CLEAR >= base &&
-          latte::Register::SQ_VTX_SEMANTIC_CLEAR < base + values.size_bytes()) {
-         auto semanticRegs = &mRegisters[latte::Register::SQ_VTX_SEMANTIC_0 / 4];
-         memset(semanticRegs, 0xFF, 32 * sizeof(uint32_t));
-      }
-   } else {
-      for (auto i = 0u; i < values.size(); ++i) {
-         auto regIdx = (base / 4) + i;
-         auto reg = static_cast<latte::Register>(regIdx * 4);
-         auto value = values[i];
-
-         auto isChanged = (value != mRegisters[regIdx]);
-
-         // Save to local registers
-         mRegisters[regIdx] = value;
-
-         // Writing SQ_VTX_SEMANTIC_CLEAR has side effects, so process those
-         if (reg == latte::Register::SQ_VTX_SEMANTIC_CLEAR) {
-            auto clearRegBase = latte::Register::SQ_VTX_SEMANTIC_0 / 4;
-            for (auto i = 0u; i < 32; ++i) {
-               if (value & (1 << i)) {
-                  mRegisters[clearRegBase + i] = 0xffffffff;
-                  applyRegister(static_cast<latte::Register>(latte::Register::SQ_VTX_SEMANTIC_0 + i * 4));
-               }
-            }
-         }
-
-         // Apply changes directly to OpenGL state if appropriate
-         if (isChanged) {
-            applyRegister(reg);
+   if (latte::Register::SQ_VTX_SEMANTIC_CLEAR >= base &&
+         latte::Register::SQ_VTX_SEMANTIC_CLEAR < base + values.size_bytes()) {
+      auto clearRegBase = latte::Register::SQ_VTX_SEMANTIC_0 / 4;
+      auto valueIdx = (latte::Register::SQ_VTX_SEMANTIC_CLEAR - base) / 4;
+      auto clearFlags = values[valueIdx];
+      for (auto i = 0u; i < 32; ++i) {
+         if (clearFlags & (1 << i)) {
+            mRegisters[clearRegBase + i] = 0xffffffff;
          }
       }
    }
+
+   memcpy(&mRegisters[base / 4], values.data(), values.size_bytes());
 }
 
 void Pm4Processor::setAluConsts(const SetAluConsts &data)
@@ -425,15 +394,9 @@ void Pm4Processor::loadRegisters(latte::Register base,
       auto start = range.first;
       auto count = range.second;
 
-      // In order to reuse the setRegisters call, we do the byte swap first and then
-      // pass that through.  Once the OpenGL backend is gone and we no longer need
-      // applyRegister, we can turn this into a byte_swap loop into mRegisters and
-      // have a function on this class for checking for special register types. This
-      // will probably be quicker due to only moving the data once (in spite of the
-      // byte_swap cost).
-
-      auto values = byteSwapRegValues(src.getRawPointer() + start, count);
-      setRegisters(static_cast<latte::Register>(base + start * 4), gsl::make_span(values, count));
+      // We can directly call setRegisters since there is no byte-swapping for shadow.
+      setRegisters(static_cast<latte::Register>(base + start * 4),
+                   gsl::make_span(src.getRawPointer() + start, count));
    }
 }
 

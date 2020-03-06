@@ -8,7 +8,12 @@ namespace ios::mcp::internal
 {
 
 MCPError
-mcpGetFileLength(phys_ptr<MCPRequestGetFileLength> request);
+mcpDeviceList(phys_ptr<const MCPRequestDeviceList> request,
+              phys_ptr<MCPDevice> deviceList,
+              uint32_t deviceListSizeBytes);
+
+MCPError
+mcpGetFileLength(phys_ptr<const MCPRequestGetFileLength> request);
 
 MCPError
 mcpGetSysProdSettings(phys_ptr<MCPResponseGetSysProdSettings> response);
@@ -18,15 +23,24 @@ mcpGetTitleId(phys_ptr<kernel::ResourceRequest> resourceRequest,
               phys_ptr<MCPResponseGetTitleId> response);
 
 MCPError
-mcpLoadFile(phys_ptr<MCPRequestLoadFile> request,
+mcpLoadFile(phys_ptr<const MCPRequestLoadFile> request,
             phys_ptr<void> outputBuffer,
             uint32_t outputBufferLength);
 
 MCPError
-mcpPrepareTitle52(phys_ptr<MCPRequestPrepareTitle> request,
+mcpPrepareTitle52(phys_ptr<const MCPRequestPrepareTitle> request,
                   phys_ptr<MCPResponsePrepareTitle> response);
 
 MCPError
-mcpSwitchTitle(phys_ptr<MCPRequestSwitchTitle> request);
+mcpSwitchTitle(phys_ptr<const MCPRequestSwitchTitle> request);
+
+MCPError
+mcpUpdateCheckContext(phys_ptr<MCPResponseUpdateCheckContext> response);
+
+MCPError
+mcpUpdateCheckResume(phys_ptr<MCPResponseUpdateCheckResume> response);
+
+MCPError
+mcpUpdateGetProgress(phys_ptr<MCPResponseUpdateProgress> response);
 
 } // namespace ios::mcp::internal

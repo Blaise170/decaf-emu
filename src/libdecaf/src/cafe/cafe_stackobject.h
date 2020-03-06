@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <common/align.h>
 #include <common/decaf_assert.h>
-#include <libcpu/cpu.h>
+#include <libcpu/cpu_control.h>
 #include <libcpu/be2_struct.h>
 #include <memory>
 #include <string_view>
@@ -12,12 +12,17 @@ namespace cafe
 
 // #define DECAF_CHECK_STACK_CAFE_OBJECTS
 
-template<typename Type, size_t NumElements = 1>
+template<typename Type, size_t NumElements = 1, size_t Alignment = alignof(Type)>
 class StackObject : public virt_ptr<Type>
 {
    static constexpr auto
-   AlignedSize = align_up(static_cast<uint32_t>(sizeof(Type) * NumElements),
-                          std::max<std::size_t>(alignof(Type), 4u));
+   StackAlignment = align_up(Alignment, 4u);
+
+   static constexpr auto
+   StackSize = align_up(static_cast<uint32_t>(sizeof(Type) * NumElements),
+                        StackAlignment);
+
+   virt_addr mRestoreStackAddress;
 
 public:
    StackObject()
@@ -25,14 +30,20 @@ public:
       auto core = cpu::this_core::state();
 
       // Adjust stack
-      auto oldStackTop = virt_addr { core->gpr[1] };
-      auto newStackTop = oldStackTop - AlignedSize;
-      core->gpr[1] = static_cast<uint32_t>(newStackTop);
+      mRestoreStackAddress = virt_addr { core->gpr[1] };
+      auto address = align_down(mRestoreStackAddress - StackSize, StackAlignment);
+      core->gpr[1] = static_cast<uint32_t>(address);
 
       // Initialise object
-      virt_ptr<Type>::mAddress = newStackTop;
+      virt_ptr<Type>::mAddress = address;
       std::uninitialized_default_construct_n(virt_ptr<Type>::get(),
                                              NumElements);
+   }
+
+   StackObject(const Type &value) :
+      StackObject()
+   {
+      std::memcpy(virt_ptr<Type>::get(), &value, sizeof(Type));
    }
 
    ~StackObject()
@@ -42,10 +53,8 @@ public:
       // Destroy object
       std::destroy_n(virt_ptr<Type>::get(), NumElements);
 
-      // Adjust stack
-      auto oldStackTop = virt_addr { core->gpr[1] };
-      auto newStackTop = oldStackTop + AlignedSize;
-      core->gpr[1] = newStackTop.getAddress();
+      // Restore stack
+      core->gpr[1] = static_cast<uint32_t>(mRestoreStackAddress);
 
 #ifdef DECAF_CHECK_STACK_CAFE_OBJECTS
       decaf_check(virt_ptr<Type>::mAddress == oldStackTop);
@@ -61,11 +70,18 @@ public:
    StackObject &operator=(StackObject&&) noexcept = delete;
 };
 
-template<typename Type, size_t NumElements>
-class StackArray : public StackObject<Type, NumElements>
+template<typename Type, size_t NumElements, size_t BaseAlignment = alignof(Type)>
+class StackArray : public StackObject<Type, NumElements, BaseAlignment>
 {
 public:
-   using StackObject<Type, NumElements>::StackObject;
+   StackArray()
+   {
+   }
+
+   StackArray(const Type (&values)[NumElements])
+   {
+      std::memcpy(virt_ptr<Type>::get(), &values, sizeof(Type) * NumElements);
+   }
 
    // Disable copy
    StackArray(const StackArray &) = delete;

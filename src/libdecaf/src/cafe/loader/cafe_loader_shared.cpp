@@ -17,6 +17,8 @@
 #include "cafe/cafe_stackobject.h"
 
 #include "cafe/libraries/cafe_hle_library.h"
+
+#include <libcpu/cpu_formatters.h>
 #include <zlib.h>
 
 namespace cafe::loader::internal
@@ -73,7 +75,6 @@ static virt_ptr<LoaderShared> gpLoaderShared = nullptr;
 static virt_ptr<TinyHeap> gpSharedCodeHeapTracking = nullptr;
 static virt_ptr<TinyHeap> gpSharedReadHeapTracking = nullptr;
 static virt_ptr<TinyHeap> sgpTrackComp = nullptr;
-static std::array<uint8_t, 0x1FF8> sRelocBuffer;
 static virt_ptr<void> sHleUnimplementedStubMemory = nullptr;
 static uint32_t sHleUnimplementedStubMemorySize = 0;
 

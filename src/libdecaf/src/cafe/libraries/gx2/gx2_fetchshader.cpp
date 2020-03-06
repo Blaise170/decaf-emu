@@ -8,7 +8,7 @@
 
 #include <common/align.h>
 #include <common/decaf_assert.h>
-#include <fmt/format.h>
+#include <fmt/core.h>
 #include <libgpu/latte/latte_instructions.h>
 
 namespace cafe::gx2
@@ -222,7 +222,6 @@ GX2InitFetchShaderEx(virt_ptr<GX2FetchShader> fetchShader,
    auto aluCount = 0; // calcNumAluInsts(type, tessMode);
    auto cfCount = calcNumCFInsts(fetchCount, type);
 
-   auto fetchSize = fetchCount * sizeof(latte::VertexFetchInst);
    auto cfSize = cfCount * sizeof(latte::ControlFlowInst);
    auto aluSize = aluCount * sizeof(latte::AluInst);
 
@@ -340,7 +339,7 @@ GX2InitFetchShaderEx(virt_ptr<GX2FetchShader> fetchShader,
 
          auto swapMode = internal::getSwapModeEndian(static_cast<GX2EndianSwapMode>(attribs[i].endianSwap & 3));
 
-         if (attribs[i].endianSwap == latte::SQ_ENDIAN::AUTO) {
+         if (attribs[i].endianSwap == GX2EndianSwapMode::Default) {
             swapMode = internal::getAttribFormatEndian(attribs[i].format);
          }
 

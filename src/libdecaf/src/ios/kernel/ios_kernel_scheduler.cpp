@@ -4,8 +4,10 @@
 #include "ios_kernel_threadqueue.h"
 #include "ios_kernel_process.h"
 
+#include <fmt/format.h>
 #include <common/log.h>
 #include <common/platform_fiber.h>
+#include <libcpu/cpu_formatters.h>
 
 namespace ios::kernel::internal
 {
@@ -18,7 +20,7 @@ struct StaticSchedulerData
 static phys_ptr<StaticSchedulerData>
 sData = nullptr;
 
-static thread_local phys_ptr<Thread>
+static phys_ptr<Thread>
 sCurrentThreadContext = nullptr;
 
 static platform::Fiber *

@@ -2,6 +2,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace decaf
 {
@@ -10,6 +11,7 @@ struct DebuggerSettings
 {
    bool enabled = true;
    bool break_on_entry = false;
+   bool break_on_exit = true;
    bool gdb_stub = false;
    unsigned gdb_stub_port = 2159;
 };
@@ -27,6 +29,9 @@ struct LogSettings
    bool to_file = false;
    bool to_stdout = false;
    std::string level = "debug";
+   std::vector<std::pair<std::string, std::string>> levels = {
+      { "ios_fs", "warn" },
+   };
    std::string directory = ".";
    bool branch_trace = false;
    bool hle_trace = false;
@@ -34,14 +39,14 @@ struct LogSettings
    std::vector<std::string> hle_trace_filters =
    {
       "+.*",
-      "-coreinit::__ghsLock",
-      "-coreinit::__ghsUnlock",
-      "-coreinit::__gh_errno_ptr",
-      "-coreinit::__gh_set_errno",
-      "-coreinit::__gh_get_errno",
-      "-coreinit::__get_eh_globals",
-      "-coreinit::OSGetTime",
-      "-coreinit::OSGetSystemTime",
+      "-coreinit.rpl::__ghsLock",
+      "-coreinit.rpl::__ghsUnlock",
+      "-coreinit.rpl::__gh_errno_ptr",
+      "-coreinit.rpl::__gh_set_errno",
+      "-coreinit.rpl::__gh_get_errno",
+      "-coreinit.rpl::__get_eh_globals",
+      "-coreinit.rpl::OSGetTime",
+      "-coreinit.rpl::OSGetSystemTime",
    };
 };
 
@@ -64,12 +69,14 @@ enum class SystemRegion
 struct SystemSettings
 {
    SystemRegion region = SystemRegion::Europe;
-   std::string mlc_path = "mlc";
-   std::string slc_path = "slc";
-   std::string sdcard_path = "sdcard";
-   std::string hfio_path = "";
    std::string content_path = {};
+   std::string hfio_path = "";
+   std::string mlc_path = "mlc";
+   std::string otp_path = "otp.bin";
+   std::string sdcard_path = "sdcard";
    std::string resources_path = "resources";
+   std::string slc_path = "slc";
+   std::vector<std::string> title_directories = {};
    bool time_scale_enabled = false;
    double time_scale = 1.0;
    std::vector<std::string> lle_modules;

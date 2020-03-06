@@ -16,7 +16,7 @@
 #include <common/byte_swap.h>
 #include <common/decaf_assert.h>
 #include <common/log.h>
-#include <fmt/format.h>
+#include <fmt/core.h>
 
 // Define this to ignore differences in generated QNaN sign bits (PowerPC
 //  0x7FF8...0 vs Intel 0xFFF8...0) when any of the NATIVE_IEEE_NAN,
@@ -383,7 +383,7 @@ disassemble(uint32_t instr,
 {
    espresso::Disassembly disassembly;
    espresso::disassemble(static_cast<espresso::Instruction>(instr), disassembly, address);
-   return disassembly.text;
+   return espresso::disassemblyToText(disassembly);
 }
 
 static bool
@@ -622,9 +622,9 @@ BinrecBackend::verifyPost(Core *core,
    if (mOptFlags.guest & binrec::Optimize::GuestPPC::NO_FPSCR_STATE) {
       fpscrMask = 0xFF;
    } else if (mOptFlags.guest & binrec::Optimize::GuestPPC::USE_SPLIT_FIELDS) {
-      fpscrMask = ~0x0007F000;
+      fpscrMask = ~0x0007F000u;
    } else if (mOptFlags.common & binrec::Optimize::FOLD_FP_CONSTANTS) {
-      fpscrMask = ~0x00060000;
+      fpscrMask = ~0x00060000u;
    } else {
       fpscrMask = ~0u;
    }

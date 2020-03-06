@@ -10,8 +10,12 @@ namespace cafe::coreinit
 {
 
 using ios::mcp::MCPCommand;
+using ios::mcp::MCPDeviceFlags;
 using ios::mcp::MCPResponseGetTitleId;
 using ios::mcp::MCPResponseGetOwnTitleInfo;
+using ios::mcp::MCPResponseUpdateCheckContext;
+using ios::mcp::MCPResponseUpdateCheckResume;
+using ios::mcp::MCPRequestDeviceList;
 using ios::mcp::MCPRequestGetOwnTitleInfo;
 using ios::mcp::MCPRequestSearchTitleList;
 using ios::mcp::MCPTitleListSearchFlags;
@@ -53,6 +57,90 @@ void
 MCP_Close(IOSHandle handle)
 {
    IOS_Close(handle);
+}
+
+IOSError
+MCP_DeviceList(IOSHandle handle,
+               virt_ptr<int32_t> numDevices,
+               virt_ptr<MCPDevice> deviceList,
+               uint32_t deviceListSizeBytes)
+{
+   if (!numDevices || !deviceList) {
+      return static_cast<IOSError>(MCPError::InvalidParam);
+   }
+
+   auto request = virt_cast<MCPRequestDeviceList *>(
+                     internal::mcpAllocateMessage(sizeof(MCPRequestDeviceList)));
+   if (!request) {
+      return static_cast<IOSError>(MCPError::Alloc);
+   }
+
+   request->flags = MCPDeviceFlags::Unk1;
+
+   auto result = IOS_Ioctl(handle,
+                           MCPCommand::DeviceList,
+                           request,
+                           sizeof(uint32_t),
+                           deviceList,
+                           deviceListSizeBytes);
+   if (result >= 0) {
+      *numDevices = static_cast<int32_t>(result);
+   }
+
+   internal::mcpFreeMessage(request);
+   return result; // This function does not translate result to MCPError
+
+}
+
+IOSError
+MCP_FullDeviceList(IOSHandle handle,
+                   virt_ptr<int32_t> numDevices,
+                   virt_ptr<MCPDevice> deviceList,
+                   uint32_t deviceListSizeBytes)
+{
+   if (!numDevices || !deviceList) {
+      return static_cast<IOSError>(MCPError::InvalidParam);
+   }
+
+   auto request = virt_cast<MCPRequestDeviceList *>(
+                     internal::mcpAllocateMessage(sizeof(MCPRequestDeviceList)));
+   if (!request) {
+      return static_cast<IOSError>(MCPError::Alloc);
+   }
+
+   request->flags = MCPDeviceFlags::Unk1 | MCPDeviceFlags::Unk2 | MCPDeviceFlags::Unk8;
+
+   auto result = IOS_Ioctl(handle,
+                           MCPCommand::DeviceList,
+                           request,
+                           sizeof(uint32_t),
+                           deviceList,
+                           deviceListSizeBytes);
+   if (result >= 0) {
+      *numDevices = static_cast<int32_t>(result);
+   }
+
+   internal::mcpFreeMessage(request);
+   return result; // This function does not translate result to MCPError
+}
+
+int32_t
+MCP_GetErrorCodeForViewer(MCPError error)
+{
+   if (error >= 0) {
+      return 1629999;
+   }
+
+   auto group = (~static_cast<uint32_t>(error) >> 16) & 0x3FF;
+   if (group != 4) {
+      return 1629999;
+   }
+
+   if (error & 0x8000) {
+      return -0x47E0 - (error | 0xFFFF0000) + 0x190000;
+   } else {
+      return -0x47E0 - (error & 0xFFFF) + 0x190000;
+   }
 }
 
 
@@ -320,6 +408,81 @@ MCP_TitleListByUniqueIdAndIndexedDeviceAndAppType(IOSHandle handle,
 }
 
 
+MCPError
+MCP_UpdateCheckContext(IOSHandle handle,
+                       virt_ptr<uint32_t> outResult)
+{
+   auto message = internal::mcpAllocateMessage(sizeof(MCPResponseUpdateCheckContext));
+   if (!message) {
+      return MCPError::Alloc;
+   }
+
+   auto response = virt_cast<MCPResponseUpdateCheckContext *>(message);
+   auto result = IOS_Ioctl(handle,
+                           MCPCommand::UpdateCheckContext,
+                           nullptr, 0,
+                           response, sizeof(MCPResponseUpdateCheckContext));
+
+   if (result < 0) {
+      return internal::mcpDecodeIosErrorToMcpError(result);
+   }
+
+   internal::mcpFreeMessage(message);
+   *outResult = response->result;
+   return MCPError::OK;
+}
+
+
+MCPError
+MCP_UpdateCheckResume(IOSHandle handle,
+                      virt_ptr<uint32_t> outResult)
+{
+   auto message = internal::mcpAllocateMessage(sizeof(MCPResponseUpdateCheckResume));
+   if (!message) {
+      return MCPError::Alloc;
+   }
+
+   auto response = virt_cast<MCPResponseUpdateCheckResume *>(message);
+   auto result = IOS_Ioctl(handle,
+                           MCPCommand::UpdateCheckResume,
+                           nullptr, 0,
+                           response, sizeof(MCPResponseUpdateCheckResume));
+
+   if (result < 0) {
+      return internal::mcpDecodeIosErrorToMcpError(result);
+   }
+
+   internal::mcpFreeMessage(message);
+   *outResult = response->result;
+   return MCPError::OK;
+}
+
+
+MCPError
+MCP_UpdateGetProgress(IOSHandle handle,
+                      virt_ptr<MCPUpdateProgress> outUpdateProgress)
+{
+   if (!outUpdateProgress || !align_check(outUpdateProgress.get(), 64)) {
+      return MCPError::InvalidParam;
+   }
+
+   auto message = internal::mcpAllocateMessage(sizeof(IOSVec));
+   if (!message) {
+      return MCPError::Alloc;
+   }
+
+   auto outVecs = virt_cast<IOSVec *>(message);
+   outVecs[0].vaddr = virt_cast<virt_addr>(outUpdateProgress);
+   outVecs[0].len = static_cast<uint32_t>(sizeof(MCPUpdateProgress));
+
+   auto iosError = IOS_Ioctlv(handle, MCPCommand::UpdateGetProgress, 0, 1, outVecs);
+   auto mcpError = internal::mcpDecodeIosErrorToMcpError(iosError);
+
+   internal::mcpFreeMessage(message);
+   return mcpError;
+}
+
+
 namespace internal
 {
 
@@ -337,7 +500,10 @@ mcpAllocateMessage(uint32_t size)
       message = IPCBufPoolAllocate(sMcpData->largeMessagePool, size);
    }
 
-   std::memset(message.get(), 0, size);
+   if (message) {
+      std::memset(message.get(), 0, size);
+   }
+
    return message;
 }
 
@@ -450,6 +616,9 @@ Library::registerMcpSymbols()
 {
    RegisterFunctionExport(MCP_Open);
    RegisterFunctionExport(MCP_Close);
+   RegisterFunctionExport(MCP_DeviceList);
+   RegisterFunctionExport(MCP_FullDeviceList);
+   RegisterFunctionExport(MCP_GetErrorCodeForViewer);
    RegisterFunctionExport(MCP_GetOwnTitleInfo);
    RegisterFunctionExport(MCP_GetSysProdSettings);
    RegisterFunctionExport(MCP_GetTitleId);
@@ -459,6 +628,9 @@ Library::registerMcpSymbols()
    RegisterFunctionExport(MCP_TitleListByAppType);
    RegisterFunctionExport(MCP_TitleListByUniqueId);
    RegisterFunctionExport(MCP_TitleListByUniqueIdAndIndexedDeviceAndAppType);
+   RegisterFunctionExport(MCP_UpdateCheckContext);
+   RegisterFunctionExport(MCP_UpdateCheckResume);
+   RegisterFunctionExport(MCP_UpdateGetProgress);
 
    RegisterDataInternal(sMcpData);
 }

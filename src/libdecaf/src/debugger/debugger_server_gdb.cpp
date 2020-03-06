@@ -10,8 +10,9 @@
 #include <common/platform_socket.h>
 #include <common/strutils.h>
 #include <common/log.h>
-#include <fmt/format.h>
-#include <libcpu/mmu.h>
+#include <fmt/core.h>
+#include <libcpu/cpu_formatters.h>
+#include <libcpu/mem.h>
 #include <numeric>
 
 namespace debugger
@@ -79,7 +80,7 @@ bool GdbServer::start(int port)
 
    auto bindAddress = sockaddr_in { 0 };
    bindAddress.sin_family = AF_INET;
-   bindAddress.sin_port = htons(port);
+   bindAddress.sin_port = htons(static_cast<uint16_t>(port));
    bindAddress.sin_addr.s_addr = INADDR_ANY;
 
    if (bind(mListenSocket,
@@ -344,7 +345,7 @@ void GdbServer::handleAddBreakpoint(const std::string &command)
 
    auto type = std::stoul(split[0], 0, 16);
    auto address = std::stoul(split[1], 0, 16);
-   auto length = std::stoul(split[2], 0, 16);
+   // auto length = std::stoul(split[2], 0, 16);
 
    if (type != BreakpointType::Execute) {
       sendCommand("E02");
@@ -361,7 +362,7 @@ void GdbServer::handleRemoveBreakpoint(const std::string &command)
 
    auto type = std::stoul(split[0], 0, 16);
    auto address = std::stoul(split[1], 0, 16);
-   auto length = std::stoul(split[2], 0, 16);
+   // auto length = std::stoul(split[2], 0, 16);
 
    if (type != BreakpointType::Execute) {
       sendCommand("E02");
@@ -373,7 +374,7 @@ void GdbServer::handleRemoveBreakpoint(const std::string &command)
 
 void GdbServer::handleSetActiveThread(const std::string &command)
 {
-   auto type = command[1];
+   // auto type = command[1];
    auto id = std::stoi(command.data() + 2, 0, 16);
 
    // Find thread by id
@@ -488,7 +489,7 @@ template<class InputIt>
 static uint8_t
 calculateChecksum(InputIt first, InputIt last)
 {
-   return static_cast<uint8_t>(std::accumulate(first, last, 0, std::plus<uint8_t>()));
+   return static_cast<uint8_t>(std::accumulate(first, last, 0, std::plus<int>()));
 }
 
 void GdbServer::sendAck()
@@ -561,7 +562,7 @@ void GdbServer::process()
       nfds = std::max(nfds, static_cast<int>(mClientSocket));
    }
 
-   auto activity = select(nfds + 1, &readfds, NULL, NULL, &tv);
+   select(nfds + 1, &readfds, NULL, NULL, &tv);
 
    if (mListenSocket != InvalidSocket && FD_ISSET(mListenSocket, &readfds)) {
       auto clientAddress = sockaddr_in { 0 };

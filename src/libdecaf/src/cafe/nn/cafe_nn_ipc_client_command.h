@@ -42,7 +42,7 @@ struct ManagedBufferCount<InBuffer<T>, Ts...>
 template<typename T, typename... Ts>
 struct ManagedBufferCount<InOutBuffer<T>, Ts...>
 {
-   static constexpr auto Input = 1 + ManagedBufferCount<Ts...>::Input;
+   static constexpr auto Input = 0 + ManagedBufferCount<Ts...>::Input;
    static constexpr auto Output = 1 + ManagedBufferCount<Ts...>::Output;
 };
 
@@ -126,20 +126,33 @@ struct IpcSerialiser<ManagedBuffer>
       auto alignedStart = align_up(unalignedStart, 64);
       auto alignedEnd = align_down(unalignedEnd, 64);
 
-      ioBuffer.alignedBuffer = virt_cast<void *>(alignedStart);
-      ioBuffer.alignedBufferSize =
-         static_cast<uint32_t>(alignedEnd - alignedStart);
+      if (unalignedEnd <= alignedStart) {
+         // Whole buffer is before alignment
+         ioBuffer.unalignedBeforeBufferSize = ioBuffer.userBufferSize;
+         ioBuffer.unalignedBeforeBuffer =
+            virt_cast<void *>(midPoint - ioBuffer.unalignedBeforeBufferSize);
 
-      ioBuffer.unalignedBeforeBufferSize =
-         static_cast<uint32_t>(alignedStart - unalignedStart);
-      ioBuffer.unalignedBeforeBuffer =
-         virt_cast<void *>(virt_cast<virt_addr>(ioBuffer.ipcBuffer) + 64
-                           - ioBuffer.unalignedBeforeBufferSize);
+         ioBuffer.alignedBuffer = nullptr;
+         ioBuffer.alignedBufferSize = 0;
 
-      ioBuffer.unalignedAfterBufferSize =
-         static_cast<uint32_t>(unalignedEnd - alignedEnd);
-      ioBuffer.unalignedAfterBuffer =
-         virt_cast<void *>(virt_cast<virt_addr>(ioBuffer.ipcBuffer) + 64);
+         ioBuffer.unalignedAfterBuffer = nullptr;
+         ioBuffer.unalignedAfterBufferSize = 0;
+      } else {
+         // Split over unaligned before / aligned / unaligned after
+         ioBuffer.unalignedBeforeBufferSize =
+            static_cast<uint32_t>(alignedStart - unalignedStart);
+         ioBuffer.unalignedBeforeBuffer =
+            virt_cast<void *>(midPoint - ioBuffer.unalignedBeforeBufferSize);
+
+         ioBuffer.alignedBuffer = virt_cast<void *>(alignedStart);
+         ioBuffer.alignedBufferSize =
+            static_cast<uint32_t>(alignedEnd - alignedStart);
+
+         ioBuffer.unalignedAfterBufferSize =
+            static_cast<uint32_t>(unalignedEnd - alignedEnd);
+         ioBuffer.unalignedAfterBuffer =
+            virt_cast<void *>(midPoint);
+      }
 
       if (userBuffer.input) {
          // Copy the unaligned buffer input
@@ -159,14 +172,14 @@ struct IpcSerialiser<ManagedBuffer>
       auto unalignedBufferIndex = uint8_t { 0 };
       auto bufferIndexOffset = uint8_t { 0 };
 
-      if (userBuffer.input) {
-         alignedBufferIndex = static_cast<uint8_t>(inputVecIdx++);
-         unalignedBufferIndex = static_cast<uint8_t>(inputVecIdx++);
-         bufferIndexOffset = 1 + data.numVecOut;
-      } else {
+      if (userBuffer.output) {
          alignedBufferIndex = static_cast<uint8_t>(outputVecIdx++);
          unalignedBufferIndex = static_cast<uint8_t>(outputVecIdx++);
-         bufferIndexOffset = 1;
+         bufferIndexOffset = 1u;
+      } else {
+         alignedBufferIndex = static_cast<uint8_t>(inputVecIdx++);
+         unalignedBufferIndex = static_cast<uint8_t>(inputVecIdx++);
+         bufferIndexOffset = static_cast<uint8_t>(1 + data.numVecOut);
       }
 
       // Update our ioctlv vecs buffer
@@ -323,7 +336,7 @@ public:
    }
 
 public:
-   const ClientCommandData &getCommandData()
+   const ClientCommandData &getCommandData() const
    {
       return mData;
    }

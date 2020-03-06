@@ -1,36 +1,38 @@
 #include "gpu_graphicsdriver.h"
+#include "gpu_config.h"
 
 #include "null/null_driver.h"
-#include "opengl/opengl_driver.h"
 #include "vulkan/vulkan_driver.h"
 
 namespace gpu
 {
 
 GraphicsDriver *
-createGLDriver()
+createGraphicsDriver()
 {
-#ifdef DECAF_GL
-   return new opengl::GLDriver {};
-#else
-   return nullptr;
-#endif
+   switch (config()->display.backend) {
+   case DisplaySettings::Null:
+      return createGraphicsDriver(GraphicsDriverType::Null);
+   case DisplaySettings::Vulkan:
+      return createGraphicsDriver(GraphicsDriverType::Vulkan);
+   default:
+      return nullptr;
+   }
 }
 
 GraphicsDriver *
-createNullDriver()
+createGraphicsDriver(GraphicsDriverType type)
 {
-   return new null::Driver {};
-}
-
-GraphicsDriver *
-createVulkanDriver()
-{
+   switch (type) {
+   case GraphicsDriverType::Null:
+      return new null::Driver{};
 #ifdef DECAF_VULKAN
-   return new vulkan::Driver {};
-#else
-   return nullptr;
+   case GraphicsDriverType::Vulkan:
+      return new vulkan::Driver{};
 #endif
+   default:
+      return nullptr;
+   }
 }
 
 } // namespace gpu

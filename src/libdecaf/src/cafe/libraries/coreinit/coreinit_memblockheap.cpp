@@ -5,6 +5,7 @@
 
 #include <common/align.h>
 #include <common/log.h>
+#include <libcpu/cpu_formatters.h>
 
 namespace cafe::coreinit
 {
@@ -25,6 +26,7 @@ MEMInitBlockHeap(virt_ptr<void> base,
       return nullptr;
    }
 
+   decaf_check(base);
    auto dataStart = virt_cast<uint8_t *>(start);
    auto dataEnd = virt_cast<uint8_t *>(end);
 

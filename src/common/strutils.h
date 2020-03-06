@@ -108,7 +108,7 @@ string_copy(char *dst,
 #ifdef PLATFORM_WINDOWS
    strncpy_s(dst, dstSize, src, maxCount);
 #else
-   std::strncpy(dst, src, maxCount);
+   std::strncpy(dst, src, dstSize);
 #endif
 }
 
@@ -138,4 +138,32 @@ char16_copy(char16_t *dst,
    }
 
    dst[i] = char16_t { 0 };
+}
+
+inline std::string_view
+trim_view(std::string_view str)
+{
+   while (!str.empty() && std::isspace(str[0])) {
+      str.remove_prefix(1);
+   }
+
+   while (!str.empty() && std::isspace(str.back())) {
+      str.remove_suffix(1);
+   }
+
+   return str;
+}
+
+inline std::string
+trim(std::string_view str)
+{
+   while (!str.empty() && std::isspace(str[0])) {
+      str.remove_prefix(1);
+   }
+
+   while (!str.empty() && std::isspace(str.back())) {
+      str.remove_suffix(1);
+   }
+
+   return std::string { str };
 }

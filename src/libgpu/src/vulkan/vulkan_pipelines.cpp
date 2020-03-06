@@ -2,6 +2,8 @@
 #include "vulkan_driver.h"
 #include "vulkan_utils.h"
 
+#include <common/log.h>
+
 static constexpr bool ForceDescriptorSets = false;
 
 namespace vulkan
@@ -50,10 +52,39 @@ Driver::getPipelineDesc()
    desc.primitiveType = vgt_primitive_type.PRIM_TYPE();
 
    // -- Primitive Reset Stuff
-   auto vgt_multi_prim_ib_reset_en = getRegister<latte::VGT_MULTI_PRIM_IB_RESET_EN>(latte::Register::VGT_MULTI_PRIM_IB_RESET_EN);
-   auto vgt_multi_prim_ib_reset_idx = getRegister<latte::VGT_MULTI_PRIM_IB_RESET_INDX>(latte::Register::VGT_MULTI_PRIM_IB_RESET_INDX);
-   desc.primitiveResetEnabled = vgt_multi_prim_ib_reset_en.RESET_EN();
-   desc.primitiveResetIndex = vgt_multi_prim_ib_reset_idx.RESET_INDX();
+   switch (desc.primitiveType) {
+   case latte::VGT_DI_PRIMITIVE_TYPE::LINESTRIP:
+   case latte::VGT_DI_PRIMITIVE_TYPE::TRIFAN:
+   case latte::VGT_DI_PRIMITIVE_TYPE::TRISTRIP:
+   case latte::VGT_DI_PRIMITIVE_TYPE::LINESTRIP_ADJ:
+   case latte::VGT_DI_PRIMITIVE_TYPE::TRISTRIP_ADJ:
+   case latte::VGT_DI_PRIMITIVE_TYPE::POLYGON:
+   case latte::VGT_DI_PRIMITIVE_TYPE::LINE_STRIP_2D:
+   case latte::VGT_DI_PRIMITIVE_TYPE::TRI_STRIP_2D:
+   case latte::VGT_DI_PRIMITIVE_TYPE::QUADSTRIP:
+   {
+      auto vgt_multi_prim_ib_reset_en = getRegister<latte::VGT_MULTI_PRIM_IB_RESET_EN>(latte::Register::VGT_MULTI_PRIM_IB_RESET_EN);
+      auto vgt_multi_prim_ib_reset_idx = getRegister<latte::VGT_MULTI_PRIM_IB_RESET_INDX>(latte::Register::VGT_MULTI_PRIM_IB_RESET_INDX);
+      desc.primitiveResetEnabled = vgt_multi_prim_ib_reset_en.RESET_EN();
+      if (desc.primitiveResetEnabled) {
+         desc.primitiveResetIndex = vgt_multi_prim_ib_reset_idx.RESET_INDX();
+      }
+      break;
+   }
+   case latte::VGT_DI_PRIMITIVE_TYPE::POINTLIST:
+   case latte::VGT_DI_PRIMITIVE_TYPE::LINELIST:
+   case latte::VGT_DI_PRIMITIVE_TYPE::LINELIST_ADJ:
+   case latte::VGT_DI_PRIMITIVE_TYPE::LINELOOP:
+   case latte::VGT_DI_PRIMITIVE_TYPE::TRILIST:
+   case latte::VGT_DI_PRIMITIVE_TYPE::TRILIST_ADJ:
+   case latte::VGT_DI_PRIMITIVE_TYPE::RECTLIST:
+   case latte::VGT_DI_PRIMITIVE_TYPE::QUADLIST:
+      desc.primitiveResetEnabled = false;
+      desc.primitiveResetIndex = 0;
+      break;
+   default:
+      decaf_abort("Unexpected VGT primitive type");
+   }
 
    // -- Constants mode
    auto sq_config = getRegister<latte::SQ_CONFIG>(latte::Register::SQ_CONFIG);
@@ -69,20 +100,20 @@ Driver::getPipelineDesc()
    auto pa_su_poly_offset_back_scale = getRegister<latte::PA_SU_POLY_OFFSET_FRONT_SCALE>(latte::Register::PA_SU_POLY_OFFSET_BACK_SCALE);
    auto pa_su_poly_offset_clamp = getRegister<latte::PA_SU_POLY_OFFSET_CLAMP>(latte::Register::PA_SU_POLY_OFFSET_CLAMP);
 
-   decaf_check_warn(!pa_cl_clip_cntl.UCP_ENA_0());
-   decaf_check_warn(!pa_cl_clip_cntl.UCP_ENA_1());
-   decaf_check_warn(!pa_cl_clip_cntl.UCP_ENA_2());
-   decaf_check_warn(!pa_cl_clip_cntl.UCP_ENA_3());
-   decaf_check_warn(!pa_cl_clip_cntl.UCP_ENA_4());
-   decaf_check_warn(!pa_cl_clip_cntl.UCP_ENA_5());
-   decaf_check_warn(!pa_cl_clip_cntl.PS_UCP_Y_SCALE_NEG());
-   decaf_check_warn(pa_cl_clip_cntl.PS_UCP_MODE() == latte::PA_PS_UCP_MODE::CULL_DISTANCE);
-   decaf_check_warn(!pa_cl_clip_cntl.UCP_CULL_ONLY_ENA());
-   decaf_check_warn(!pa_cl_clip_cntl.BOUNDARY_EDGE_FLAG_ENA());
-   decaf_check_warn(!pa_cl_clip_cntl.DIS_CLIP_ERR_DETECT());
-   decaf_check_warn(!pa_cl_clip_cntl.VTX_KILL_OR());
-   decaf_check_warn(!pa_cl_clip_cntl.DX_LINEAR_ATTR_CLIP_ENA());
-   decaf_check_warn(!pa_cl_clip_cntl.VTE_VPORT_PROVOKE_DISABLE());
+   decaf_check_warn_once(!pa_cl_clip_cntl.UCP_ENA_0());
+   decaf_check_warn_once(!pa_cl_clip_cntl.UCP_ENA_1());
+   decaf_check_warn_once(!pa_cl_clip_cntl.UCP_ENA_2());
+   decaf_check_warn_once(!pa_cl_clip_cntl.UCP_ENA_3());
+   decaf_check_warn_once(!pa_cl_clip_cntl.UCP_ENA_4());
+   decaf_check_warn_once(!pa_cl_clip_cntl.UCP_ENA_5());
+   decaf_check_warn_once(!pa_cl_clip_cntl.PS_UCP_Y_SCALE_NEG());
+   decaf_check_warn_once(pa_cl_clip_cntl.PS_UCP_MODE() == latte::PA_PS_UCP_MODE::CULL_DISTANCE);
+   decaf_check_warn_once(!pa_cl_clip_cntl.UCP_CULL_ONLY_ENA());
+   decaf_check_warn_once(!pa_cl_clip_cntl.BOUNDARY_EDGE_FLAG_ENA());
+   decaf_check_warn_once(!pa_cl_clip_cntl.DIS_CLIP_ERR_DETECT());
+   decaf_check_warn_once(!pa_cl_clip_cntl.VTX_KILL_OR());
+   decaf_check_warn_once(!pa_cl_clip_cntl.DX_LINEAR_ATTR_CLIP_ENA());
+   decaf_check_warn_once(!pa_cl_clip_cntl.VTE_VPORT_PROVOKE_DISABLE());
 
    // pa_cl_clip_cntl.CLIP_DISABLE() is really an optimization which
    // indicates that there will be no draws outside the boundary of
@@ -108,7 +139,7 @@ Driver::getPipelineDesc()
    // that this is the correct behaviour though, it would be better if
    // we supported splitting the polygons as needed.
 
-   // TODO: Use decaf_check_warn here instead...
+   // TODO: Use decaf_check_warn_once here instead...
 
    desc.polyPType = latte::PA_PTYPE::TRIANGLES;
 
@@ -122,7 +153,7 @@ Driver::getPipelineDesc()
       } else if (desc.cullFront) {
          desc.polyPType = pa_su_sc_mode_cntl.POLYMODE_BACK_PTYPE();
       } else {
-         decaf_check_warn(pa_su_sc_mode_cntl.POLYMODE_FRONT_PTYPE() == pa_su_sc_mode_cntl.POLYMODE_BACK_PTYPE());
+         decaf_check_warn_once(pa_su_sc_mode_cntl.POLYMODE_FRONT_PTYPE() == pa_su_sc_mode_cntl.POLYMODE_BACK_PTYPE());
          desc.polyPType = pa_su_sc_mode_cntl.POLYMODE_FRONT_PTYPE();
       }
    } else {
@@ -136,7 +167,7 @@ Driver::getPipelineDesc()
       } else if (desc.cullFront) {
          desc.polyBiasEnabled = pa_su_sc_mode_cntl.POLY_OFFSET_BACK_ENABLE();
       } else {
-         decaf_check_warn(pa_su_sc_mode_cntl.POLY_OFFSET_FRONT_ENABLE() == pa_su_sc_mode_cntl.POLY_OFFSET_BACK_ENABLE());
+         decaf_check_warn_once(pa_su_sc_mode_cntl.POLY_OFFSET_FRONT_ENABLE() == pa_su_sc_mode_cntl.POLY_OFFSET_BACK_ENABLE());
          desc.polyBiasEnabled = pa_su_sc_mode_cntl.POLY_OFFSET_FRONT_ENABLE();
       }
    } else {
@@ -153,8 +184,8 @@ Driver::getPipelineDesc()
          desc.polyBiasOffset = pa_su_poly_offset_back_offset.OFFSET();
          desc.polyBiasScale = pa_su_poly_offset_back_scale.SCALE();
       } else {
-         decaf_check_warn(pa_su_poly_offset_front_offset.value == pa_su_poly_offset_back_offset.value);
-         decaf_check_warn(pa_su_poly_offset_front_scale.value == pa_su_poly_offset_back_scale.value);
+         decaf_check_warn_once(pa_su_poly_offset_front_offset.value == pa_su_poly_offset_back_offset.value);
+         decaf_check_warn_once(pa_su_poly_offset_front_scale.value == pa_su_poly_offset_back_scale.value);
          desc.polyBiasOffset = pa_su_poly_offset_front_offset.OFFSET();
          desc.polyBiasScale = pa_su_poly_offset_front_scale.SCALE();
       }
@@ -165,7 +196,7 @@ Driver::getPipelineDesc()
    }
 
    // We only support zclip being on or off, not individually for near/far.
-   decaf_check_warn(pa_cl_clip_cntl.ZCLIP_NEAR_DISABLE() == pa_cl_clip_cntl.ZCLIP_FAR_DISABLE());
+   decaf_check_warn_once(pa_cl_clip_cntl.ZCLIP_NEAR_DISABLE() == pa_cl_clip_cntl.ZCLIP_FAR_DISABLE());
    desc.zclipDisabled = pa_cl_clip_cntl.ZCLIP_NEAR_DISABLE();
 
    // -- Depth/Stencil control stuff
@@ -561,6 +592,10 @@ Driver::checkCurrentPipeline()
    case latte::VGT_DI_PRIMITIVE_TYPE::LINELIST:
       inputAssembly.topology = vk::PrimitiveTopology::eLineList;
       break;
+   case latte::VGT_DI_PRIMITIVE_TYPE::LINELOOP:
+      // We handle translation of this during draw
+      inputAssembly.topology = vk::PrimitiveTopology::eLineStrip;
+      break;
    case latte::VGT_DI_PRIMITIVE_TYPE::LINESTRIP:
       inputAssembly.topology = vk::PrimitiveTopology::eLineStrip;
       break;
@@ -586,17 +621,19 @@ Driver::checkCurrentPipeline()
       inputAssembly.topology = vk::PrimitiveTopology::eTriangleStripWithAdjacency;
       break;
    case latte::VGT_DI_PRIMITIVE_TYPE::RECTLIST:
-      // We use a custom geometry shader to translate these
-      inputAssembly.topology = vk::PrimitiveTopology::eLineListWithAdjacency;
+      // We handle translation of this during draw
+      inputAssembly.topology = vk::PrimitiveTopology::eTriangleList;
       break;
    case latte::VGT_DI_PRIMITIVE_TYPE::QUADLIST:
-   case latte::VGT_DI_PRIMITIVE_TYPE::QUADSTRIP:
-      // We handle translation of these types during draw
+      // We handle translation of this during draw
       inputAssembly.topology = vk::PrimitiveTopology::eTriangleList;
+      break;
+   case latte::VGT_DI_PRIMITIVE_TYPE::QUADSTRIP:
+      // We handle translation of this during draw
+      inputAssembly.topology = vk::PrimitiveTopology::eTriangleStrip;
       break;
       //case latte::VGT_DI_PRIMITIVE_TYPE::NONE:
       //case latte::VGT_DI_PRIMITIVE_TYPE::TRI_WITH_WFLAGS:
-      //case latte::VGT_DI_PRIMITIVE_TYPE::LINELOOP:
       //case latte::VGT_DI_PRIMITIVE_TYPE::POLYGON:
       //case latte::VGT_DI_PRIMITIVE_TYPE::COPY_RECT_LIST_2D_V0:
       //case latte::VGT_DI_PRIMITIVE_TYPE::COPY_RECT_LIST_2D_V1:
@@ -612,7 +649,9 @@ Driver::checkCurrentPipeline()
    // Technically there is another valid configuration using 32-bit indices and a reset of 0xFFFF,
    // but checking for this requires more state input to the pipeline...
    inputAssembly.primitiveRestartEnable = currentDesc->primitiveResetEnabled;
-   decaf_check(currentDesc->primitiveResetIndex == 0xFFFF || currentDesc->primitiveResetIndex == 0xFFFFFFFF);
+   decaf_check(!currentDesc->primitiveResetEnabled ||
+               (currentDesc->primitiveResetIndex == 0xFFFF ||
+                currentDesc->primitiveResetIndex == 0xFFFFFFFF));
 
    // ------------------------------------------------------------
    // Viewports and Scissors

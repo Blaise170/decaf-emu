@@ -9,11 +9,13 @@
 #include "gx2_format.h"
 #include "gx2_surface.h"
 
-#include "cafe/cafe_ppc_interface_invoke.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 #include "cafe/libraries/coreinit/coreinit_memory.h"
 
 #include <common/decaf_assert.h>
-#include <fmt/format.h>
+#include <fmt/core.h>
+#include <libcpu/cpu_formatters.h>
+#include <libgpu/gpu_ringbuffer.h>
 
 namespace cafe::gx2
 {
@@ -24,13 +26,13 @@ struct StaticDisplayData
 {
    be2_struct<GX2ColorBuffer> tvScanBuffer;
    be2_struct<GX2ColorBuffer> drcScanBuffer;
-   be2_val<GX2TVScanMode> tvScanMode;
-   be2_val<GX2TVRenderMode> tvRenderMode;
+   be2_val<GX2TVScanMode> tvScanMode = GX2TVScanMode::P1080;
+   be2_val<GX2TVRenderMode> tvRenderMode = GX2TVRenderMode::Disabled;
    be2_val<GX2BufferingMode> tvBufferingMode;
-   be2_val<GX2DrcRenderMode> drcRenderMode;
+   be2_val<GX2DrcRenderMode> drcRenderMode = GX2DrcRenderMode::Disabled;
    be2_val<GX2BufferingMode> drcBufferingMode;
    be2_val<GX2DRCConnectCallbackFunction> drcConnectCallback;
-   be2_val<uint32_t> swapInterval;
+   be2_val<uint32_t> swapInterval = 1u;
 };
 
 static virt_ptr<StaticDisplayData>
@@ -184,8 +186,29 @@ GX2GetLastFrame(GX2ScanTarget scanTarget,
 }
 
 BOOL
+GX2GetLastFrameB(GX2ScanTarget scanTarget,
+                 virt_ptr<GX2Texture> texture)
+{
+   return FALSE;
+}
+
+BOOL
 GX2GetLastFrameGamma(GX2ScanTarget scanTarget,
                      virt_ptr<float> outGamma)
+{
+   return FALSE;
+}
+
+BOOL
+GX2GetLastFrameGammaA(GX2ScanTarget scanTarget,
+                      virt_ptr<float> outGamma)
+{
+   return GX2GetLastFrameGamma(scanTarget, outGamma);
+}
+
+BOOL
+GX2GetLastFrameGammaB(GX2ScanTarget scanTarget,
+                      virt_ptr<float> outGamma)
 {
    return FALSE;
 }
@@ -199,7 +222,7 @@ GX2GetSystemTVScanMode()
 GX2DrcRenderMode
 GX2GetSystemDRCMode()
 {
-   return GX2DrcRenderMode::Single;
+   return sDisplayData->drcRenderMode;
 }
 
 GX2AspectRatio
@@ -248,14 +271,20 @@ GX2SetDRCBuffer(virt_ptr<void> buffer,
    sDisplayData->drcRenderMode = drcRenderMode;
    sDisplayData->drcBufferingMode = bufferingMode;
 
-   // bufferingMode is conveniently equal to the number of buffers
-   internal::writePM4(latte::pm4::DecafSetBuffer {
-      latte::pm4::ScanTarget::DRC,
-      OSEffectiveToPhysical(virt_cast<virt_addr>(buffer)),
-      bufferingMode,
-      static_cast<uint32_t>(width),
-      static_cast<uint32_t>(height)
-   });
+   // Using a command buffer is to communicate this data to the GPU is our
+   // decaf specific hack, therefore we must write it directly instead of
+   // infecting the GX2 command buffer with our fake command.
+   std::array<uint32_t, 6> commandBuffer;
+   auto commandBufferPos = 0u;
+   internal::writePM4(commandBuffer.data(), commandBufferPos,
+      latte::pm4::DecafSetBuffer {
+         latte::pm4::ScanTarget::DRC,
+         OSEffectiveToPhysical(virt_cast<virt_addr>(buffer)),
+         bufferingMode, // bufferingMode is conveniently equal to the number of buffers
+         static_cast<uint32_t>(width),
+         static_cast<uint32_t>(height)
+      });
+   gpu::ringbuffer::write({ commandBuffer.data(), commandBufferPos });
 }
 
 GX2DRCConnectCallbackFunction
@@ -318,14 +347,20 @@ GX2SetTVBuffer(virt_ptr<void> buffer,
    AVMSetTVBufferAttr(bufferingMode, tvRenderMode, pitch);
    */
 
-   // bufferingMode is conveniently equal to the number of buffers
-   internal::writePM4(latte::pm4::DecafSetBuffer {
-      latte::pm4::ScanTarget::TV,
-      OSEffectiveToPhysical(virt_cast<virt_addr>(buffer)),
-      bufferingMode,
-      static_cast<uint32_t>(width),
-      static_cast<uint32_t>(height)
-   });
+   // Using a command buffer is to communicate this data to the GPU is our
+   // decaf specific hack, therefore we must write it directly instead of
+   // infecting the GX2 command buffer with our fake command.
+   std::array<uint32_t, 6> commandBuffer;
+   auto commandBufferPos = 0u;
+   internal::writePM4(commandBuffer.data(), commandBufferPos,
+      latte::pm4::DecafSetBuffer {
+         latte::pm4::ScanTarget::TV,
+         OSEffectiveToPhysical(virt_cast<virt_addr>(buffer)),
+         bufferingMode, // bufferingMode is conveniently equal to the number of buffers
+         static_cast<uint32_t>(width),
+         static_cast<uint32_t>(height)
+      });
+   gpu::ringbuffer::write({ commandBuffer.data(), commandBufferPos });
 }
 
 void
@@ -342,8 +377,6 @@ GX2SetTVScale(uint32_t x,
 void
 GX2SwapScanBuffers()
 {
-   // For Debugging
-   static uint32_t debugSwapCount = 0;
    internal::debugCaptureTagGroup(GX2DebugTag::SwapScanBuffers);
 
    internal::onSwap();
@@ -357,15 +390,6 @@ GX2SwapScanBuffers()
 
 namespace internal
 {
-
-void
-initialiseDisplay()
-{
-   sDisplayData->tvScanMode = GX2TVScanMode::P1080;
-   sDisplayData->tvRenderMode = GX2TVRenderMode::Disabled;
-   sDisplayData->drcRenderMode = GX2DrcRenderMode::Disabled;
-   sDisplayData->swapInterval = 1u;
-}
 
 virt_ptr<GX2Surface>
 getTvScanBuffer()
@@ -388,7 +412,10 @@ Library::registerDisplaySymbols()
    RegisterFunctionExport(GX2CalcTVSize);
    RegisterFunctionExport(GX2CopyColorBufferToScanBuffer);
    RegisterFunctionExport(GX2GetLastFrame);
+   RegisterFunctionExportName("_GX2GetLastFrameB", GX2GetLastFrameB);
    RegisterFunctionExport(GX2GetLastFrameGamma);
+   RegisterFunctionExport(GX2GetLastFrameGammaA);
+   RegisterFunctionExport(GX2GetLastFrameGammaB);
    RegisterFunctionExport(GX2GetSystemTVScanMode);
    RegisterFunctionExport(GX2GetSystemDRCMode);
    RegisterFunctionExport(GX2GetSystemTVAspectRatio);

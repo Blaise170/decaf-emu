@@ -8,8 +8,10 @@
 
 #include "cafe/cafe_stackobject.h"
 
+#include <fmt/format.h>
 #include <common/log.h>
 #include <common/strutils.h>
+#include <libcpu/cpu_formatters.h>
 
 namespace cafe::coreinit
 {
@@ -69,13 +71,14 @@ OSPanic(virt_ptr<const char> file,
         virt_ptr<const char> fmt,
         var_args args)
 {
+   auto buffer = StackArray<char, 1024> { };
+
    auto vaList = make_va_list(args);
-   auto msg = fmt::memory_buffer { };
-   internal::formatStringV(fmt, vaList, msg);
+   size_t size = internal::formatStringV(buffer, buffer.size(), fmt, vaList);
    free_va_list(vaList);
 
    internal::OSPanic(file.get(), line,
-                     std::string_view { msg.data(), msg.size() });
+                     std::string_view { &buffer[0], size });
 }
 
 void
@@ -128,7 +131,7 @@ OSPanic(std::string_view file,
 
    // Format a guest stack trace
    auto core = cpu::this_core::state();
-   auto stackAddress = virt_addr { core->gpr[1] };
+   auto stackAddress = virt_addr { core->systemCallStackHead };
    auto stackTraceBuffer = fmt::memory_buffer { };
    fmt::format_to(stackTraceBuffer, "Guest stack trace:\n");
 

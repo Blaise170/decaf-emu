@@ -1,7 +1,8 @@
 #ifdef DECAF_VULKAN
 #include "spirv_transpiler.h"
+#include "latte/latte_disassembler.h"
 
-#include <disassemble.h>
+#include <SPIRV/disassemble.h>
 #include <regex>
 
 namespace spirv
@@ -148,6 +149,13 @@ void Transpiler::writeVertexProlog(ShaderSpvBuilder &spvGen, const VertexShaderD
    writeGenericProlog(spvGen);
 
    auto oneConst = spvGen.makeIntConstant(1);
+   auto twoConst = spvGen.makeIntConstant(2);
+
+   if (desc.regs.pa_cl_vs_out_cntl.USE_VTX_POINT_SIZE()) {
+      auto pointSizePtr = spvGen.createAccessChain(spv::StorageClass::StorageClassPushConstant, spvGen.vsPushConstVar(), { twoConst });
+      auto pointSizeVal = spvGen.createLoad(pointSizePtr);
+      spvGen.createStore(pointSizeVal, spvGen.pointSizeVar());
+   }
 
    // Note that because we use VertexIndex, we have to subtrack the base value
    // away from gl_VertexIndex to receive the same value we received in GL.
@@ -269,31 +277,31 @@ void Transpiler::writePixelProlog(ShaderSpvBuilder &spvGen, const PixelShaderDes
    std::map<uint32_t, latte::SPI_PS_INPUT_CNTL_N*> inputCntlMap;
 
    auto numInputs = desc.regs.spi_ps_in_control_0.NUM_INTERP();
-   for (auto i = 0u; i < numInputs; ++i) {
-      auto &spi_ps_input_cntl = desc.regs.spi_ps_input_cntls[i];
-      auto gprRef = spvGen.getGprRef({ i, latte::GprIndexMode::None });
+   for (auto inputIdx = 0u; inputIdx < numInputs; ++inputIdx) {
+      auto &spi_ps_input_cntl = desc.regs.spi_ps_input_cntls[inputIdx];
+      auto gprRef = spvGen.getGprRef({ inputIdx, latte::GprIndexMode::None });
       auto inputSemantic = spi_ps_input_cntl.SEMANTIC();
 
       // Locate the vertex shader output that matches
       int semLocation = -1;
-      for (auto i = 0; i < 10; ++i) {
-         if (inputSemantic == desc.regs.spi_vs_out_ids[i].SEMANTIC_0()) {
-            semLocation = i * 4 + 0;
+      for (auto semIdx = 0; semIdx < 10; ++semIdx) {
+         if (inputSemantic == desc.regs.spi_vs_out_ids[semIdx].SEMANTIC_0()) {
+            semLocation = semIdx * 4 + 0;
             break;
-         } else if (inputSemantic == desc.regs.spi_vs_out_ids[i].SEMANTIC_1()) {
-            semLocation = i * 4 + 1;
+         } else if (inputSemantic == desc.regs.spi_vs_out_ids[semIdx].SEMANTIC_1()) {
+            semLocation = semIdx * 4 + 1;
             break;
-         } else if (inputSemantic == desc.regs.spi_vs_out_ids[i].SEMANTIC_2()) {
-            semLocation = i * 4 + 2;
+         } else if (inputSemantic == desc.regs.spi_vs_out_ids[semIdx].SEMANTIC_2()) {
+            semLocation = semIdx * 4 + 2;
             break;
-         } else if (inputSemantic == desc.regs.spi_vs_out_ids[i].SEMANTIC_3()) {
-            semLocation = i * 4 + 3;
+         } else if (inputSemantic == desc.regs.spi_vs_out_ids[semIdx].SEMANTIC_3()) {
+            semLocation = semIdx * 4 + 3;
             break;
          }
       }
 
       if (desc.regs.spi_ps_in_control_0.POSITION_ENA() &&
-          desc.regs.spi_ps_in_control_0.POSITION_ADDR() == i) {
+          desc.regs.spi_ps_in_control_0.POSITION_ADDR() == inputIdx) {
          // TODO: Handle desc.regs.spi_ps_in_control_0.POSITION_CENTROID();
          // TODO: Handle desc.regs.spi_ps_in_control_0.POSITION_SAMPLE();
          spvGen.createStore(spvGen.createLoad(spvGen.fragCoordVar()), gprRef);
@@ -431,6 +439,7 @@ bool Transpiler::translate(const ShaderDesc& shaderDesc, Shader *shader)
    }
 
    auto spvGen = ShaderSpvBuilder(spvExecModel);
+   spvGen.setSource(spv::SourceLanguageOpenCL_CPP, 0);
    spvGen.setSourceFile("none");
 
    state.mSpv = &spvGen;
@@ -443,6 +452,9 @@ bool Transpiler::translate(const ShaderDesc& shaderDesc, Shader *shader)
    if (shaderDesc.type == ShaderType::Vertex) {
       auto &vsDesc = *reinterpret_cast<const VertexShaderDesc*>(&shaderDesc);
 
+      spvGen.setSourceText(latte::disassemble(shaderDesc.binary) + "\n\n" +
+                           latte::disassemble(vsDesc.fsBinary, true));
+
       spvGen.setBindingBase(32 * 0);
 
       state.mSqVtxSemantics = vsDesc.regs.sq_vtx_semantics;
@@ -453,6 +465,9 @@ bool Transpiler::translate(const ShaderDesc& shaderDesc, Shader *shader)
    } else if (shaderDesc.type == ShaderType::Geometry) {
       auto &gsDesc = *reinterpret_cast<const GeometryShaderDesc*>(&shaderDesc);
 
+      spvGen.setSourceText(latte::disassemble(shaderDesc.binary) + "\n\n" +
+                           latte::disassemble(gsDesc.dcBinary));
+
       spvGen.setBindingBase(32 * 1);
 
       state.mPaClVsOutCntl = gsDesc.regs.pa_cl_vs_out_cntl;
@@ -461,6 +476,8 @@ bool Transpiler::translate(const ShaderDesc& shaderDesc, Shader *shader)
       Transpiler::writeGeometryProlog(spvGen, gsDesc);
    } else if (shaderDesc.type == ShaderType::Pixel) {
       auto &psDesc = *reinterpret_cast<const PixelShaderDesc*>(&shaderDesc);
+
+      spvGen.setSourceText(latte::disassemble(shaderDesc.binary));
 
       spvGen.setBindingBase(32 * 2);
 
@@ -540,7 +557,8 @@ bool Transpiler::translate(const ShaderDesc& shaderDesc, Shader *shader)
          spvGen.setBuildPoint(dcFunc->getEntryBlock());
 
          // Need to save our GPRs first
-         auto gprType = spvGen.makeArrayType(spvGen.float4Type(), spvGen.makeUintConstant(128), 0);
+
+         auto gprType = spvGen.arrayType(spvGen.float4Type(), 16, 128);
          auto gprSaveVar = spvGen.createVariable(spv::StorageClass::StorageClassPrivate, gprType, "RVarSave");
          spvGen.createNoResultOp(spv::OpCopyMemory, { gprSaveVar, spvGen.gprVar() });
 
@@ -551,8 +569,7 @@ bool Transpiler::translate(const ShaderDesc& shaderDesc, Shader *shader)
 
          // We need to increment the ring offset at the end of each.  Note that we only
          // support striding in vec4 intervals.
-         auto gsDesc = reinterpret_cast<const GeometryShaderDesc*>(&shaderDesc);
-         auto ringItemStride = gsDesc->regs.sq_gs_vert_itemsize.ITEMSIZE();
+         auto ringItemStride = gsDesc.regs.sq_gs_vert_itemsize.ITEMSIZE();
          decaf_check(ringItemStride % 4 == 0);
          auto ringStride = ringItemStride / 4;
          auto ringStrideConst = spvGen.makeIntConstant(ringStride);
@@ -612,7 +629,7 @@ bool generateRectStub(const RectStubShaderDesc& shaderDesc, RectStubShader *shad
    auto mainFn = spvGen.makeEntryPoint("main");
    auto entry = spvGen.addEntryPoint(spv::ExecutionModelGeometry, mainFn, "main");
 
-   spvGen.addExecutionMode(mainFn, spv::ExecutionModeInputLinesAdjacency);
+   spvGen.addExecutionMode(mainFn, spv::ExecutionModeTriangles);
    spvGen.addExecutionMode(mainFn, spv::ExecutionModeInvocations, 1);
    spvGen.addExecutionMode(mainFn, spv::ExecutionModeOutputTriangleStrip);
    spvGen.addExecutionMode(mainFn, spv::ExecutionModeOutputVertices, 6);
@@ -620,14 +637,13 @@ bool generateRectStub(const RectStubShaderDesc& shaderDesc, RectStubShader *shad
    auto zeroConst = spvGen.makeIntConstant(0);
    auto oneConst = spvGen.makeIntConstant(1);
    auto twoConst = spvGen.makeIntConstant(2);
-   auto threeConst = spvGen.makeIntConstant(3);
-   auto fourConst = spvGen.makeIntConstant(4);
+   auto twoFConst = spvGen.vectorizeConstant(spvGen.makeFloatConstant(2.0f), 4);
 
    auto glInType = spvGen.makeStructType({ spvGen.float4Type() }, "gl_in");
    spvGen.addDecoration(glInType, spv::DecorationBlock);
    spvGen.addMemberDecoration(glInType, 0, spv::DecorationBuiltIn, spv::BuiltInPosition);
    spvGen.addMemberName(glInType, 0, "gl_Position");
-   auto glInArrType = spvGen.makeArrayType(glInType, fourConst, 0);
+   auto glInArrType = spvGen.arrayType(glInType, 16, 3);
    auto glInArrVar = spvGen.createVariable(spv::StorageClassInput, glInArrType, "gl_in");
    entry->addIdOperand(glInArrVar);
 
@@ -638,121 +654,138 @@ bool generateRectStub(const RectStubShaderDesc& shaderDesc, RectStubShader *shad
    auto perVertexVar = spvGen.createVariable(spv::StorageClassOutput, perVertexType, "gl_PerVertex");
    entry->addIdOperand(perVertexVar);
 
-   std::vector<spv::Id> inputParams;
-   std::vector<spv::Id> outputParams;
+   std::array<spv::Id, 3> posInVals;
+   std::vector<std::array<spv::Id, 3>> paramInVals;
+   spv::Id posOutPtr;
+   std::vector<spv::Id> paramOutPtrs;
+
+   auto posInPtr0 = spvGen.createAccessChain(spv::StorageClassInput, glInArrVar, { zeroConst, zeroConst });
+   auto posInPtr1 = spvGen.createAccessChain(spv::StorageClassInput, glInArrVar, { oneConst, zeroConst });
+   auto posInPtr2 = spvGen.createAccessChain(spv::StorageClassInput, glInArrVar, { twoConst, zeroConst });
+   posInVals[0] = spvGen.createLoad(posInPtr0);
+   posInVals[1] = spvGen.createLoad(posInPtr1);
+   posInVals[2] = spvGen.createLoad(posInPtr2);
+
+   posOutPtr = spvGen.createAccessChain(spv::StorageClassOutput, perVertexVar, { zeroConst });
 
    for (auto i = 0u; i < shaderDesc.numVsExports; ++i) {
       auto paramType = spvGen.float4Type();
-      auto paramInVarType = spvGen.makeArrayType(paramType, fourConst, 0);
+      auto paramInVarType = spvGen.arrayType(paramType, 16, 3);
       auto paramInVar = spvGen.createVariable(spv::StorageClassInput, paramInVarType, fmt::format("PARAM_{}_IN", i).c_str());
       spvGen.addDecoration(paramInVar, spv::DecorationLocation, i);
       entry->addIdOperand(paramInVar);
-      inputParams.push_back(paramInVar);
+
+      std::array<spv::Id, 3> paramInVal;
+      auto paramInPtr0 = spvGen.createAccessChain(spv::StorageClassInput, paramInVar, { zeroConst });
+      auto paramInPtr1 = spvGen.createAccessChain(spv::StorageClassInput, paramInVar, { oneConst });
+      auto paramInPtr2 = spvGen.createAccessChain(spv::StorageClassInput, paramInVar, { twoConst });
+      paramInVal[0] = spvGen.createLoad(paramInPtr0);
+      paramInVal[1] = spvGen.createLoad(paramInPtr1);
+      paramInVal[2] = spvGen.createLoad(paramInPtr2);
+      paramInVals.emplace_back(paramInVal);
 
       auto paramOutVar = spvGen.createVariable(spv::StorageClassOutput, paramType, fmt::format("PARAM_{}_OUT", i).c_str());
       spvGen.addDecoration(paramOutVar, spv::DecorationLocation, i);
       entry->addIdOperand(paramOutVar);
-      outputParams.push_back(paramOutVar);
+      paramOutPtrs.push_back(paramOutVar);
    }
 
-   auto emitVertex = [&](int vertexId){
-      auto vtxIdConst = spvGen.makeIntConstant(vertexId);
+   // Reflects v across tangent created by t1/t2
+   auto reflectVec4 = [&](spv::Id v, spv::Id t1, spv::Id t2)
+   {
+      auto midPointAdd = spvGen.createBinOp(spv::OpFAdd, spvGen.float4Type(), t1, t2);
+      auto midPoint = spvGen.createBinOp(spv::OpFDiv, spvGen.float4Type(), midPointAdd, twoFConst);
+      auto cornerToMidPoint = spvGen.createBinOp(spv::OpFSub, spvGen.float4Type(), midPoint, v);
+      return spvGen.createBinOp(spv::OpFAdd, spvGen.float4Type(), midPoint, cornerToMidPoint);
+   };
 
-      auto posIn0Ptr = spvGen.createAccessChain(spv::StorageClassInput, glInArrVar, { vtxIdConst, zeroConst });
-      auto posOutPtr = spvGen.createAccessChain(spv::StorageClassOutput, perVertexVar, { zeroConst });
-      auto posInVal = spvGen.createLoad(posIn0Ptr);
-      spvGen.createStore(posInVal, posOutPtr);
+   // Emits a vertex that was sent as input
+   auto emitVertex = [&](int vertexId) {
+      spvGen.createStore(posInVals[vertexId], posOutPtr);
 
-      for (auto i = 0u; i < shaderDesc.numVsExports; ++i) {
-         auto paramInPtr = spvGen.createAccessChain(spv::StorageClassInput, inputParams[i], { vtxIdConst });
-         auto paramOutPtr = outputParams[i];
-         auto paramInVal = spvGen.createLoad(paramInPtr);
-         spvGen.createStore(paramInVal, paramOutPtr);
+      for (auto paramIdx = 0u; paramIdx < shaderDesc.numVsExports; ++paramIdx) {
+         spvGen.createStore(paramInVals[paramIdx][vertexId], paramOutPtrs[paramIdx]);
       }
 
       spvGen.createNoResultOp(spv::OpEmitVertex);
    };
 
-   auto posIn0Ptr = spvGen.createAccessChain(spv::StorageClassInput, glInArrVar, { zeroConst, zeroConst });
-   auto posIn0Val = spvGen.createLoad(posIn0Ptr);
-   auto posIn1Ptr = spvGen.createAccessChain(spv::StorageClassInput, glInArrVar, { oneConst, zeroConst });
-   auto posIn1Val = spvGen.createLoad(posIn1Ptr);
-   auto posIn2Ptr = spvGen.createAccessChain(spv::StorageClassInput, glInArrVar, { twoConst, zeroConst });
-   auto posIn2Val = spvGen.createLoad(posIn2Ptr);
-   auto posIn3Ptr = spvGen.createAccessChain(spv::StorageClassInput, glInArrVar, { threeConst, zeroConst });
-   auto posIn3Val = spvGen.createLoad(posIn3Ptr);
+   // Emits a vertex generated by flipping v accross the tangent created by t1/t2
+   auto emitGenVertex = [&](int vId, int t1Id, int t2Id)
+   {
+      auto posVal = reflectVec4(posInVals[vId],
+                                posInVals[t1Id],
+                                posInVals[t2Id]);
+      spvGen.createStore(posVal, posOutPtr);
 
-   auto posDiff0to3 = spvGen.createBinOp(spv::OpFSub, spvGen.float4Type(), posIn0Val, posIn3Val);
-   auto posDiff1to3 = spvGen.createBinOp(spv::OpFSub, spvGen.float4Type(), posIn1Val, posIn3Val);
-   auto posDiff2to3 = spvGen.createBinOp(spv::OpFSub, spvGen.float4Type(), posIn2Val, posIn3Val);
+      for (auto paramIdx = 0u; paramIdx < shaderDesc.numVsExports; ++paramIdx) {
+         auto paramVal = reflectVec4(paramInVals[paramIdx][vId],
+                                     paramInVals[paramIdx][t1Id],
+                                     paramInVals[paramIdx][t2Id]);
+         spvGen.createStore(paramVal, paramOutPtrs[paramIdx]);
+      }
 
-   auto posLen0to3 = spvGen.createBuiltinCall(spvGen.floatType(), spvGen.glslStd450(), GLSLstd450::GLSLstd450Length, { posDiff0to3 });
-   auto posLen1to3 = spvGen.createBuiltinCall(spvGen.floatType(), spvGen.glslStd450(), GLSLstd450::GLSLstd450Length, { posDiff1to3 });
-   auto posLen2to3 = spvGen.createBuiltinCall(spvGen.floatType(), spvGen.glslStd450(), GLSLstd450::GLSLstd450Length, { posDiff2to3 });
+      spvGen.createNoResultOp(spv::OpEmitVertex);
+   };
 
-   auto len0gt1 = spvGen.createBinOp(spv::OpFOrdGreaterThan, spvGen.boolType(), posLen0to3, posLen1to3);
-   auto len0gt2 = spvGen.createBinOp(spv::OpFOrdGreaterThan, spvGen.boolType(), posLen0to3, posLen2to3);
-   auto len1gt2 = spvGen.createBinOp(spv::OpFOrdGreaterThan, spvGen.boolType(), posLen1to3, posLen2to3);
+   /*
+   len0 = | in[0] - in[1] |
+   len1 = | in[0] - in[2] |
+   len2 = | in[1] - in[2] |
 
+   if (len0 > len1 && len0 > len2) {
+      // 0 -> 1 is the hypotenuse
+   } else if (len1 > len2) {
+      // 0 -> 2 is the hypotenuse
+   } else {
+      // 1 -> 2 is the hypotenuse
+   }
+   */
+
+   // Generate the simplest initial triangle
    emitVertex(0);
    emitVertex(1);
    emitVertex(2);
 
    spvGen.createNoResultOp(spv::OpEndPrimitive);
 
-   /*
-   if (len0 > len1) {
-      if (len0 > len2) {
-         // len 0 biggest
-      } else {
-         // len 2 biggest
-      }
-   } else {
-      if (len1 > len2) {
-         // len 1 biggest
-      } else {
-         // len 2 biggest
-      }
-   }
-   */
+   // Identify the hypotenuse and generate the opposing triangle
+   auto posDiff0to1 = spvGen.createBinOp(spv::OpFSub, spvGen.float4Type(), posInVals[0], posInVals[1]);
+   auto posDiff0to2 = spvGen.createBinOp(spv::OpFSub, spvGen.float4Type(), posInVals[0], posInVals[2]);
+   auto posDiff1to2 = spvGen.createBinOp(spv::OpFSub, spvGen.float4Type(), posInVals[1], posInVals[2]);
 
-   auto block = spv::Builder::If { len0gt1, spv::SelectionControlMaskNone, spvGen };
+   auto posLen0to1 = spvGen.createBuiltinCall(spvGen.floatType(), spvGen.glslStd450(), GLSLstd450::GLSLstd450Length, { posDiff0to1 });
+   auto posLen0to2 = spvGen.createBuiltinCall(spvGen.floatType(), spvGen.glslStd450(), GLSLstd450::GLSLstd450Length, { posDiff0to2 });
+   auto posLen1to2 = spvGen.createBuiltinCall(spvGen.floatType(), spvGen.glslStd450(), GLSLstd450::GLSLstd450Length, { posDiff1to2 });
+
+   auto len0gt1 = spvGen.createBinOp(spv::OpFOrdGreaterThan, spvGen.boolType(), posLen0to1, posLen0to2);
+   auto len0gt2 = spvGen.createBinOp(spv::OpFOrdGreaterThan, spvGen.boolType(), posLen0to1, posLen1to2);
+   auto len0to1Longest = spvGen.createBinOp(spv::OpLogicalAnd, spvGen.boolType(), len0gt1, len0gt2);
+
+   auto len0to1Block = spv::Builder::If { len0to1Longest, spv::SelectionControlMaskNone, spvGen };
    {
-      auto block = spv::Builder::If { len0gt2, spv::SelectionControlMaskNone, spvGen };
-      {
-         // pos 0 is the hypotenuse
-         emitVertex(1);
-         emitVertex(2);
-         emitVertex(3);
-      }
-      block.makeBeginElse();
-      {
-         // pos 2 is the hypotenuse
-         emitVertex(0);
-         emitVertex(1);
-         emitVertex(3);
-      }
-      block.makeEndIf();
+      emitVertex(0);
+      emitGenVertex(2, 0, 1);
+      emitVertex(1);
    }
-   block.makeBeginElse();
+   len0to1Block.makeBeginElse();
    {
-      auto block = spv::Builder::If { len1gt2, spv::SelectionControlMaskNone, spvGen };
+      auto len0to2Longest = spvGen.createBinOp(spv::OpFOrdGreaterThan, spvGen.boolType(), posLen0to2, posLen1to2);
+      auto len0to2Block = spv::Builder::If { len0to2Longest, spv::SelectionControlMaskNone, spvGen };
       {
-         // len 1 is the hypotenuse
          emitVertex(0);
+         emitGenVertex(1, 0, 2);
          emitVertex(2);
-         emitVertex(3);
       }
-      block.makeBeginElse();
+      len0to2Block.makeBeginElse();
       {
-         // len 2 is the hypotenuse
-         emitVertex(0);
          emitVertex(1);
-         emitVertex(3);
+         emitGenVertex(0, 1, 2);
+         emitVertex(2);
       }
-      block.makeEndIf();
+      len0to2Block.makeEndIf();
    }
-   block.makeEndIf();
+   len0to1Block.makeEndIf();
 
    spvGen.createNoResultOp(spv::OpEndPrimitive);
 

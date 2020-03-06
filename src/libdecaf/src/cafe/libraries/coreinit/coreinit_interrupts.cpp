@@ -3,11 +3,11 @@
 #include "coreinit_interrupts.h"
 #include "coreinit_scheduler.h"
 
-#include "cafe/cafe_ppc_interface_invoke.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 #include "cafe/kernel/cafe_kernel_exception.h"
 #include "cafe/kernel/cafe_kernel_interrupts.h"
 
-#include <libcpu/cpu.h>
+#include <libcpu/cpu_control.h>
 
 namespace cafe::coreinit
 {

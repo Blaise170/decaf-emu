@@ -10,7 +10,8 @@
 
 #include <common/align.h>
 #include <common/log.h>
-#include <fmt/format.h>
+#include <fmt/core.h>
+#include <libcpu/cpu_formatters.h>
 
 namespace cafe::coreinit
 {
@@ -255,7 +256,7 @@ FSGetErrorCodeForViewer(virt_ptr<FSClient> client,
       }
    }
 
-   if (blockBody->iosError >= 0) {
+   if (blockBody->iosError >= IOSError::OK) {
       return static_cast<FSAStatus>(FSStatus::OK);
    } else {
       // TODO: Translate error block->unk0x9f4 for FSGetErrorCodeForViewer

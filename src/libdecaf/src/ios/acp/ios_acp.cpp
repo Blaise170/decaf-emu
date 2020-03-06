@@ -17,19 +17,15 @@
 
 #include <common/log.h>
 
-namespace ios::acp
-{
-
 using namespace ios::fs;
 using namespace ios::kernel;
 using namespace ios::mcp;
 
+namespace ios::acp
+{
+
 constexpr auto LocalHeapSize = 0x20000u;
 constexpr auto CrossHeapSize = 0x80000u;
-
-constexpr auto AcpProcNumMessages = 10u;
-constexpr auto AcpProcThreadStackSize = 0x2000u;
-constexpr auto AcpProcThreadPriority = 50u;
 
 struct StaticAcpData
 {
@@ -42,7 +38,7 @@ static phys_ptr<void> sLocalHeapBuffer = nullptr;
 namespace internal
 {
 
-std::shared_ptr<spdlog::logger> acpLog = nullptr;
+Logger acpLog = { };
 
 void
 initialiseStaticData()
@@ -124,9 +120,7 @@ processEntryPoint(phys_ptr<void> /* context */)
    MessageQueueId messageQueueId;
 
    // Initialise logger
-   if (!internal::acpLog) {
-      internal::acpLog = decaf::makeLogger("IOS_ACP");
-   }
+   internal::acpLog = decaf::makeLogger("IOS_ACP");
 
    // Initialise static memory
    internal::initialiseStaticData();

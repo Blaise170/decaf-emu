@@ -13,9 +13,6 @@
 [submodule "libraries/ovsocket"]
 	path = libraries/ovsocket
 	url = https://github.com/exjam/ovsocket.git
-[submodule "libraries/glbinding"]
-	path = libraries/glbinding
-	url = https://github.com/cginternals/glbinding.git
 [submodule "libraries/gsl-lite"]
 	path = libraries/gsl-lite
 	url = https://github.com/decaf-emu/gsl-lite.git
@@ -28,9 +25,9 @@
 [submodule "libraries/imgui"]
 	path = libraries/imgui
 	url = https://github.com/ocornut/imgui.git
-[submodule "libraries/fixed_point"]
-	path = libraries/fixed_point
-	url = https://github.com/johnmcfarlane/fixed_point
+[submodule "libraries/cnl"]
+	path = libraries/cnl
+	url = https://github.com/johnmcfarlane/cnl
 [submodule "libraries/catch"]
 	path = libraries/catch
 	url = https://github.com/philsquared/Catch.git
@@ -46,3 +43,6 @@
 [submodule "libraries/glslang"]
 	path = libraries/glslang
 	url = https://github.com/KhronosGroup/glslang.git
+[submodule "libraries/qtads"]
+	path = libraries/qtads
+	url = https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System.git

@@ -1,13 +1,17 @@
 #include "cafe_hle.h"
 #include "cafe_hle_library.h"
 
+#include "cafe/libraries/ghs/cafe_ghs_typeinfo.h"
 #include "cafe/loader/cafe_loader_rpl.h"
 #include "decaf_config.h"
 
 #include <common/log.h>
+#include <fmt/core.h>
 #include <fstream>
 #include <libcpu/cpu.h>
+#include <libcpu/cpu_formatters.h>
 #include <libcpu/espresso/espresso_instructionset.h>
+#include <unordered_map>
 #include <zlib.h>
 
 namespace rpl = cafe::loader::rpl;
@@ -120,6 +124,26 @@ Library::registerSystemCalls()
 }
 
 void
+Library::generate()
+{
+   registerSymbols();
+
+   if (!mTypeInfo.empty()) {
+      RegisterFunctionInternalName("__pure_virtual_called",
+                                   cafe::ghs::pure_virtual_called);
+      RegisterFunctionInternalName("__dt__Q2_3std9type_infoFv",
+                                   cafe::ghs::std_typeinfo_Destructor);
+   }
+
+   if (mEntryPointSymbolName.empty()) {
+      RegisterGenericEntryPoint();
+   }
+
+   registerSystemCalls();
+   generateRpl();
+}
+
+void
 Library::relocate(virt_addr textBaseAddress,
                   virt_addr dataBaseAddress)
 {
@@ -147,15 +171,36 @@ Library::relocate(virt_addr textBaseAddress,
          }
       }
    }
+
+   for (auto &type : mTypeInfo) {
+      if (type.hostVirtualTablePtr) {
+         *type.hostVirtualTablePtr =
+            virt_cast<ghs::VirtualTable *>(dataBaseAddress + type.virtualTableOffset);
+      }
+
+      if (type.hostTypeDescriptorPtr) {
+         *type.hostTypeDescriptorPtr =
+            virt_cast<ghs::TypeDescriptor *>(dataBaseAddress + type.typeDescriptorOffset);
+      }
+   }
 }
 
 static uint32_t
 addSectionString(std::vector<uint8_t> &data,
-                 std::string_view name)
+                 std::string_view name,
+                 int align = 1)
 {
    auto pos = data.size();
+
+   // Insert string with null terminator
    data.insert(data.end(), name.begin(), name.end());
    data.push_back(0);
+
+   // Pad to 4 byte alignment
+   while ((data.size() % align) != 0) {
+      data.push_back(0);
+   }
+
    return static_cast<uint32_t>(pos);
 }
 
@@ -166,17 +211,16 @@ generateTypeDescriptors(Library *library,
                         std::vector<uint8_t> &data,
                         std::vector<uint8_t> &relocations)
 {
-   auto stdTypeInfoOffset = uint32_t { 0u };
-
+   auto stdTypeInfo = LibraryTypeInfo { };
    auto addRelocation =
-      [&relocations](const int32_t srcOffset,
-                     const uint32_t dstOffset,
-                     const uint32_t symbol)
+      [&relocations](const uint32_t offset,
+                     const uint32_t symbol,
+                     const int32_t symbolAddend)
       {
          auto rela = rpl::Rela { };
          rela.info = rpl::R_PPC_ADDR32 | (symbol << 8);
-         rela.addend = srcOffset;
-         rela.offset = dstOffset;
+         rela.addend = symbolAddend;
+         rela.offset = offset;
          relocations.insert(relocations.end(),
                             reinterpret_cast<uint8_t *>(&rela),
                             reinterpret_cast<uint8_t *>(&rela) + sizeof(rpl::Rela));
@@ -184,30 +228,38 @@ generateTypeDescriptors(Library *library,
 
    // Add a relocation against symbol 1 ($TEXT)
    auto addTextRelocation =
-      [&addRelocation, dataBaseAddr](const uint32_t srcOffset,
-                                     const uint32_t dstOffset)
+      [&addRelocation, dataBaseAddr](const uint32_t offset,
+                                     const uint32_t relocationAddress)
       {
-         addRelocation(srcOffset,
-                       dstOffset + dataBaseAddr, 1);
+         addRelocation(offset + dataBaseAddr, 1, relocationAddress);
       };
 
    // Add a relocation against symbol 2 ($DATA)
    auto addDataRelocation =
-      [&addRelocation, dataBaseAddr](const uint32_t srcOffset,
-                                     const uint32_t dstOffset)
+      [&addRelocation, dataBaseAddr](const uint32_t offset,
+                                     const uint32_t relocationAddress)
       {
-         addRelocation(srcOffset,
-                       dstOffset + dataBaseAddr, 2);
+         addRelocation(offset + dataBaseAddr, 2, relocationAddress);
       };
 
    auto addTypeDescriptor =
       [&](LibraryTypeInfo &typeInfo)
       {
-         typeInfo.nameOffset = addSectionString(data, typeInfo.name);
+         typeInfo.nameOffset = addSectionString(data, typeInfo.name, 4);
 
-         // Allocate some memory so the address acts as a unique type id
-         typeInfo.typeIdOffset = static_cast<uint32_t>(data.size());
-         data.resize(data.size() + 4);
+         LibrarySymbol *typeIdSymbol = nullptr;
+         if (typeInfo.typeIdSymbol) {
+            typeIdSymbol = library->findSymbol(typeInfo.typeIdSymbol);
+         }
+
+         if (typeIdSymbol) {
+            // Use the given type id symbol
+            typeInfo.typeIdOffset = typeIdSymbol->offset;
+         } else {
+            // Allocate some memory so the address acts as a unique type id
+            typeInfo.typeIdOffset = static_cast<uint32_t>(data.size());
+            data.resize(data.size() + 4);
+         }
 
          if (!typeInfo.baseTypes.empty()) {
             // Reserve space for base types
@@ -221,39 +273,42 @@ generateTypeDescriptors(Library *library,
          // Insert type descriptor, all the values are filled via relocations
          typeInfo.typeDescriptorOffset = static_cast<uint32_t>(data.size());
          data.resize(data.size() + sizeof(ghs::TypeDescriptor));
-         addDataRelocation(typeInfo.typeDescriptorOffset + 0x00, stdTypeInfoOffset);
+
+         // Create virtual table
+         if (!typeInfo.virtualTable.empty()) {
+            typeInfo.virtualTableOffset = static_cast<uint32_t>(data.size());
+
+            {
+               // First entry points to the type descriptor
+               auto entryOffset = static_cast<uint32_t>(data.size());
+               data.resize(data.size() + sizeof(ghs::VirtualTable));
+               addDataRelocation(entryOffset + 4, typeInfo.typeDescriptorOffset);
+            }
+
+            for (auto entry : typeInfo.virtualTable) {
+               auto entryOffset = static_cast<uint32_t>(data.size());
+               auto symbol = library->findSymbol(entry);
+               decaf_assert(symbol,
+                  fmt::format("Could not find vtable function {}", entry));
+               data.resize(data.size() + sizeof(ghs::VirtualTable));
+               addTextRelocation(entryOffset + 4, symbol->offset);
+            }
+         }
+
+         // Add type descriptor relocations, must be done after setting
+         // virtualTableOffset incase typeInfo == stdTypeInfo
+         addDataRelocation(typeInfo.typeDescriptorOffset + 0x00, stdTypeInfo.virtualTableOffset);
          addDataRelocation(typeInfo.typeDescriptorOffset + 0x04, typeInfo.nameOffset);
          addDataRelocation(typeInfo.typeDescriptorOffset + 0x08, typeInfo.typeIdOffset);
          if (!typeInfo.baseTypes.empty()) {
             addDataRelocation(typeInfo.typeDescriptorOffset + 0x0C, typeInfo.baseTypeOffset);
          }
-
-         // Create virtual table
-         auto virtualTableOffset = static_cast<uint32_t>(data.size());
-
-         {
-            // First entry points to the type descriptor
-            auto entryOffset = static_cast<uint32_t>(data.size());
-            data.resize(data.size() + sizeof(ghs::VirtualTable));
-            addDataRelocation(entryOffset + 4, typeInfo.typeDescriptorOffset);
-         }
-
-         for (auto entry : typeInfo.virtualTable) {
-            auto entryOffset = static_cast<uint32_t>(data.size());
-            auto symbol = library->findSymbol(entry);
-            decaf_assert(symbol,
-                         fmt::format("Could not find vtable function {}", entry));
-            data.resize(data.size() + sizeof(ghs::VirtualTable));
-            addTextRelocation(entryOffset + 4, symbol->offset);
-         }
-
-         return typeInfo.typeDescriptorOffset;
       };
 
    // Generate type descriptors
-   LibraryTypeInfo stdTypeInfo;
    stdTypeInfo.name = "std::type_info";
-   stdTypeInfoOffset = addTypeDescriptor(stdTypeInfo);
+   stdTypeInfo.virtualTable.push_back("__dt__Q2_3std9type_infoFv");
+   addTypeDescriptor(stdTypeInfo);
 
    for (auto &type : types) {
       addTypeDescriptor(type);
@@ -295,10 +350,6 @@ constexpr auto LibraryFunctionStubSize = 8u;
 constexpr auto CodeBaseAddress = 0x02000000u;
 constexpr auto DataBaseAddress = 0x10000000u;
 constexpr auto LoadBaseAddress = 0xC0000000u;
-
-// NULL, .text, .fexports, .data, .dexports, .rela.fexports, .rela.dexports,
-// .symtab, .strtab, .shstrtab, SHT_RPL_CRCS, SHT_RPL_FILEINFO
-constexpr auto NumSections = 12;
 
 struct Section
 {
@@ -342,7 +393,6 @@ Library::generateRpl()
 
    // Calculate required number of sections
    auto numSections = 1u;
-   auto nullSectionIndex = 0u;
    auto textSectionIndex = 0u;
    auto fexportSectionIndex = 0u;
    auto fexportRelaSectionIndex = 0u;
@@ -388,7 +438,6 @@ Library::generateRpl()
    auto sections = std::vector<Section> { };
    sections.resize(numSections);
 
-   auto nullSection = sections.begin() + nullSectionIndex;
    auto textSection = sections.begin() + textSectionIndex;
    auto fexportSection = sections.begin() + fexportSectionIndex;
    auto fexportRelaSection = sections.begin() + fexportRelaSectionIndex;
@@ -875,10 +924,10 @@ Library::generateRpl()
    fileHeader.shstrndx = static_cast<uint16_t>(shStrTabSectionIndex);
 
    // Find and set the entry point
-   auto entryPointAddr = 0u;
-   if (auto itr = mSymbolMap.find("rpl_entry"); itr != mSymbolMap.end()) {
-      entryPointAddr = textSection->header.addr + itr->second->offset;
-   }
+   decaf_check(!mEntryPointSymbolName.empty());
+   auto entryPointItr = mSymbolMap.find(mEntryPointSymbolName);
+   decaf_check(entryPointItr != mSymbolMap.end());
+   auto entryPointAddr = textSection->header.addr + entryPointItr->second->offset;
 
    fileHeader.entry = entryPointAddr;
 

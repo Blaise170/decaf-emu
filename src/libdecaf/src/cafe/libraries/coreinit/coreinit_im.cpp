@@ -2,9 +2,9 @@
 #include "coreinit_im.h"
 #include "coreinit_ios.h"
 #include "coreinit_mutex.h"
-#include "cafe/cafe_ppc_interface_invoke.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 #include "cafe/cafe_stackobject.h"
-#include <libcpu/cpu.h>
+#include <libcpu/state.h>
 
 namespace cafe::coreinit
 {

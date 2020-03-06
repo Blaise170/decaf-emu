@@ -5,14 +5,15 @@
 #include "coreinit_fs_driver.h"
 #include "coreinit_fs_cmdblock.h"
 #include "coreinit_fsa_shim.h"
-#include "cafe/cafe_ppc_interface_invoke.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 
 #include <common/align.h>
 #include <common/log.h>
 #include <common/strutils.h>
 #include <cstring>
-#include <fmt/format.h>
-#include <libcpu/cpu.h>
+#include <fmt/core.h>
+#include <libcpu/state.h>
+#include <libcpu/cpu_formatters.h>
 
 namespace cafe::coreinit
 {
@@ -204,7 +205,6 @@ fsCmdBlockPrepareSync(virt_ptr<FSClient> client,
                       virt_ptr<FSCmdBlock> block,
                       virt_ptr<FSAsyncData> asyncData)
 {
-   auto clientBody = internal::fsClientGetBody(client);
    auto blockBody = internal::fsCmdBlockGetBody(block);
    OSInitMessageQueue(virt_addrof(blockBody->syncQueue),
                       virt_addrof(blockBody->syncQueueMsgs),
@@ -333,7 +333,7 @@ fsCmdBlockHandleResult(virt_ptr<FSCmdBlockBody> blockBody)
       return;
    }
 
-   if (blockBody->fsaStatus < 0) {
+   if (blockBody->fsaStatus < FSAStatus::OK) {
       auto errorFlags = FSErrorFlag::All;
 
       switch (blockBody->fsaStatus) {

@@ -9,23 +9,10 @@ namespace vulkan
 void
 Driver::bindDescriptors()
 {
-   // Ensure the scratch buffers are large enough to guarentee we won't need
-   // to perform any reallocations of the buffers.
-   mScratchImageInfos.clear();
-   mScratchBufferInfos.clear();
-   auto &scratchImageInfos = mScratchImageInfos;
-   auto &scratchBufferInfos = mScratchBufferInfos;
+   bool dSetHasValues = false;
 
-   // Ensure the descriptor scratch buffers are large enough to never realloc.
-   mScratchDescriptorWrites.clear();
-   auto &descWrites = mScratchDescriptorWrites;
-
-   vk::DescriptorSet dSet;
-   if (!mCurrentDraw->pipeline->pipelineLayout) {
-      // If there is no custom pipeline layout configured, this means we have to use
-      // standard descriptor sets rather than being able to take advantage of push.
-      dSet = allocateGenericDescriptorSet();
-   }
+   std::array<std::array<vk::DescriptorImageInfo, latte::MaxTextures>, 3> texSampInfos;
+   std::array<std::array<vk::DescriptorBufferInfo, latte::MaxUniformBlocks>, 3 > bufferInfos;
 
    for (auto shaderStage = 0u; shaderStage < 3u; ++shaderStage) {
       auto shaderStageTyped = static_cast<ShaderStage>(shaderStage);
@@ -53,116 +40,154 @@ Driver::bindDescriptors()
          decaf_abort("Unexpected shader stage during descriptor build");
       }
 
-      auto bindingBase = 32 * shaderStage;
-
-      // We have to ensure the sampler count and texture count match since we pack
-      // multiple of these things into a single descriptor.
-      static_assert(latte::MaxTextures == latte::MaxSamplers);
-
       for (auto i = 0u; i < latte::MaxSamplers; ++i) {
-         if (shaderMeta->textureUsed[i]) {
-            scratchImageInfos.push_back({});
-            auto &imageInfo = scratchImageInfos.back();
-
+         if (shaderMeta->samplerUsed[i]) {
             auto &sampler = mCurrentDraw->samplers[shaderStage][i];
-
             if (sampler) {
-               imageInfo.sampler = sampler->sampler;
+               texSampInfos[shaderStage][i].sampler = sampler->sampler;
             } else {
-               imageInfo.sampler = mBlankSampler;
+               texSampInfos[shaderStage][i].sampler = mBlankSampler;
             }
 
+            dSetHasValues = true;
+         }
+      }
+
+      for (auto i = 0u; i < latte::MaxTextures; ++i) {
+         if (shaderMeta->textureUsed[i]) {
             auto &texture = mCurrentDraw->textures[shaderStage][i];
             if (texture) {
-               imageInfo.imageView = texture->imageView;
+               texSampInfos[shaderStage][i].imageView = texture->imageView;
             } else {
-               imageInfo.imageView = mBlankImageView;
+               texSampInfos[shaderStage][i].imageView = mBlankImageView;
             }
 
-            imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+            texSampInfos[shaderStage][i].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-            // Set up the descriptor
-            descWrites.push_back({});
-            vk::WriteDescriptorSet& writeDesc = descWrites.back();
-            writeDesc.dstSet = dSet;
-            writeDesc.dstBinding = bindingBase + i;
-            writeDesc.dstArrayElement = 0;
-            writeDesc.descriptorCount = 1;
-            if (texture && sampler) {
-               writeDesc.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-            } else if (sampler) {
-               writeDesc.descriptorType = vk::DescriptorType::eSampler;
-            } else if (texture) {
-               writeDesc.descriptorType = vk::DescriptorType::eSampledImage;
-            }
-            writeDesc.pImageInfo = &imageInfo;
-            writeDesc.pBufferInfo = nullptr;
-            writeDesc.pTexelBufferView = nullptr;
+            dSetHasValues = true;
          }
       }
 
       if (mCurrentDraw->gprBuffers[shaderStage]) {
          if (shaderMeta->cfileUsed) {
-            scratchBufferInfos.push_back({});
-            auto &bufferInfo = scratchBufferInfos.back();
-
             auto gprBuffer = mCurrentDraw->gprBuffers[shaderStage];
-            if (gprBuffer) {
-               bufferInfo.buffer = gprBuffer->buffer;
-               bufferInfo.offset = 0;
-               bufferInfo.range = gprBuffer->size;
-            } else {
-               bufferInfo.buffer = mBlankBuffer;
-               bufferInfo.offset = 0;
-               bufferInfo.range = 1024;
-            }
 
-            descWrites.push_back({});
-            vk::WriteDescriptorSet& writeDesc = descWrites.back();
-            writeDesc.dstSet = dSet;
-            writeDesc.dstBinding = bindingBase + 16;
-            writeDesc.dstArrayElement = 0;
-            writeDesc.descriptorCount = 1;
-            writeDesc.descriptorType = vk::DescriptorType::eUniformBuffer;
-            writeDesc.pImageInfo = nullptr;
-            writeDesc.pBufferInfo = &bufferInfo;
-            writeDesc.pTexelBufferView = nullptr;
+            bufferInfos[shaderStage][0].buffer = gprBuffer->buffer;
+            bufferInfos[shaderStage][0].offset = 0;
+            bufferInfos[shaderStage][0].range = gprBuffer->size;
+
+            dSetHasValues = true;
          }
       } else {
          for (auto i = 0u; i < latte::MaxUniformBlocks; ++i) {
             if (shaderMeta->cbufferUsed[i]) {
-               scratchBufferInfos.push_back({});
-               auto &bufferInfo = scratchBufferInfos.back();
-
                auto& uniformBuffer = mCurrentDraw->uniformBlocks[shaderStage][i];
                if (uniformBuffer) {
-                  bufferInfo.buffer = uniformBuffer->buffer;
-                  bufferInfo.offset = 0;
-                  bufferInfo.range = uniformBuffer->size;
+                  bufferInfos[shaderStage][i].buffer = uniformBuffer->buffer;
+                  bufferInfos[shaderStage][i].offset = 0;
+                  bufferInfos[shaderStage][i].range = uniformBuffer->size;
                } else {
-                  bufferInfo.buffer = mBlankBuffer;
-                  bufferInfo.offset = 0;
-                  bufferInfo.range = 1024;
+                  bufferInfos[shaderStage][i].buffer = mBlankBuffer;
+                  bufferInfos[shaderStage][i].offset = 0;
+                  bufferInfos[shaderStage][i].range = 1024;
                }
 
-               descWrites.push_back({});
-               vk::WriteDescriptorSet& writeDesc = descWrites.back();
-               writeDesc.dstSet = dSet;
-               writeDesc.dstBinding = bindingBase + 16 + i;
-               writeDesc.dstArrayElement = 0;
-               writeDesc.descriptorCount = 1;
-               writeDesc.descriptorType = vk::DescriptorType::eUniformBuffer;
-               writeDesc.pImageInfo = nullptr;
-               writeDesc.pBufferInfo = &bufferInfo;
-               writeDesc.pTexelBufferView = nullptr;
+               dSetHasValues = true;
             }
          }
       }
    }
 
-   if (descWrites.empty()) {
-      // If there are no descriptors for this draw, there is nothing to do.
+   // If this shader stage has nothing bound, there is no need to
+   // actually generate our descriptor sets or anything.
+   if (!dSetHasValues) {
       return;
+   }
+
+   /*
+   for (auto shaderStage = 0u; shaderStage < 3u; ++shaderStage) {
+      for (auto &samplerInfo : samplerInfos[shaderStage]) {
+         if (!samplerInfo.sampler) {
+            samplerInfo.sampler = mBlankSampler;
+         }
+      }
+      for (auto &textureInfo : textureInfos[shaderStage]) {
+         if (!textureInfo.imageView) {
+            textureInfo.imageView = mBlankImageView;
+            textureInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+         }
+      }
+      for (auto &bufferInfo : bufferInfos[shaderStage]) {
+         if (!bufferInfo.buffer) {
+            bufferInfo.buffer = mBlankBuffer;
+            bufferInfo.offset = 0;
+            bufferInfo.range = 1;
+         }
+      }
+   }
+   */
+
+   vk::DescriptorSet dSet;
+   if (!mCurrentDraw->pipeline->pipelineLayout) {
+      // If there is no custom pipeline layout configured, this means we have to use
+      // standard descriptor sets rather than being able to take advantage of push.
+
+      dSet = allocateGenericDescriptorSet();
+   }
+
+   mScratchDescriptorWrites.clear();
+   auto &descWrites = mScratchDescriptorWrites;
+
+   for (auto shaderStage = 0u; shaderStage < 3u; ++shaderStage) {
+      auto bindingBase = 32 * shaderStage;
+
+      for (auto i = 0u; i < latte::MaxTextures; ++i) {
+         if (!texSampInfos[shaderStage][i].sampler && !texSampInfos[shaderStage][i].imageView) {
+            continue;
+         }
+
+         descWrites.push_back({});
+         vk::WriteDescriptorSet& writeDesc = descWrites.back();
+         writeDesc.dstSet = dSet;
+         writeDesc.dstBinding = bindingBase + i;
+         writeDesc.dstArrayElement = 0;
+         writeDesc.descriptorCount = 1;
+         if (texSampInfos[shaderStage][i].sampler && texSampInfos[shaderStage][i].imageView) {
+            writeDesc.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+         } else if (texSampInfos[shaderStage][i].sampler) {
+            writeDesc.descriptorType = vk::DescriptorType::eSampler;
+         } else if (texSampInfos[shaderStage][i].imageView) {
+            writeDesc.descriptorType = vk::DescriptorType::eSampledImage;
+         }
+         writeDesc.pImageInfo = &texSampInfos[shaderStage][i];
+         writeDesc.pBufferInfo = nullptr;
+         writeDesc.pTexelBufferView = nullptr;
+      }
+
+      bindingBase += latte::MaxTextures;
+
+      for (auto i = 0u; i < latte::MaxUniformBlocks; ++i) {
+         if (i >= 15) {
+            // Refer to the descriptor layout creation code for information
+            // on why this code is neccessary...
+            break;
+         }
+
+         if (!bufferInfos[shaderStage][i].buffer) {
+            continue;
+         }
+
+         descWrites.push_back({});
+         vk::WriteDescriptorSet& writeDesc = descWrites.back();
+         writeDesc.dstSet = dSet;
+         writeDesc.dstBinding = bindingBase + i;
+         writeDesc.dstArrayElement = 0;
+         writeDesc.descriptorCount = 1;
+         writeDesc.descriptorType = vk::DescriptorType::eStorageBuffer;
+         writeDesc.pImageInfo = nullptr;
+         writeDesc.pBufferInfo = &bufferInfos[shaderStage][i];
+         writeDesc.pTexelBufferView = nullptr;
+      }
    }
 
    if (!dSet) {
@@ -187,7 +212,7 @@ Driver::bindShaderParams()
 
    // This should probably be split to its own function
    if (mCurrentDraw->vertexShader) {
-      VsPushConstants vsConstData;
+      spirv::VertexPushConstants vsConstData;
       vsConstData.posMulAdd.x = mCurrentDraw->shaderViewportData.xMul;
       vsConstData.posMulAdd.y = mCurrentDraw->shaderViewportData.yMul;
       vsConstData.posMulAdd.z = mCurrentDraw->shaderViewportData.xAdd;
@@ -196,15 +221,17 @@ Driver::bindShaderParams()
       vsConstData.zSpaceMul.y = mCurrentDraw->shaderViewportData.zMul;
       *reinterpret_cast<uint32_t*>(&vsConstData.zSpaceMul.z) = mCurrentDraw->baseVertex;
       *reinterpret_cast<uint32_t*>(&vsConstData.zSpaceMul.w) = mCurrentDraw->baseInstance;
+      vsConstData.pointSize = mCurrentDraw->pointSize / 8.0f;
 
-      if (!mActiveVsConstantsSet || memcmp(&vsConstData, &mActiveVsConstants, sizeof(VsPushConstants)) != 0) {
+      if (!mActiveVsConstantsSet ||
+          memcmp(&vsConstData, &mActiveVsConstants, sizeof(vsConstData)) != 0) {
          mActiveVsConstants = vsConstData;
          mActiveVsConstantsSet = true;
 
-         mActiveCommandBuffer.pushConstants<VsPushConstants>(mPipelineLayout,
-                                                             vk::ShaderStageFlagBits::eVertex |
-                                                             vk::ShaderStageFlagBits::eGeometry,
-                                                             0, { vsConstData });
+         mActiveCommandBuffer.pushConstants<spirv::VertexPushConstants>(
+            mPipelineLayout,
+            vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eGeometry,
+            spirv::VertexPushConstantsOffset, { vsConstData });
       }
    }
 
@@ -213,23 +240,25 @@ Driver::bindShaderParams()
       auto alphaFunc = mCurrentDraw->pipeline->shaderAlphaFunc;
       auto alphaRef = mCurrentDraw->pipeline->shaderAlphaRef;
 
-      PsPushConstants psConstData;
-      psConstData.alphaData = (lopMode << 8) | static_cast<uint32_t>(alphaFunc);
+      spirv::FragmentPushConstants psConstData;
+      psConstData.alphaFunc = (lopMode << 8) | static_cast<uint32_t>(alphaFunc);
       psConstData.alphaRef = alphaRef;
-      psConstData.needPremultiply = 0;
+      psConstData.needsPremultiply = 0;
       for (auto i = 0; i < latte::MaxRenderTargets; ++i) {
-         if (mCurrentDraw->pipeline->needsPremultipliedTargets && !mCurrentDraw->pipeline->targetIsPremultiplied[i]) {
-            psConstData.needPremultiply |= (1 << i);
+         if (mCurrentDraw->pipeline->needsPremultipliedTargets &&
+             !mCurrentDraw->pipeline->targetIsPremultiplied[i]) {
+            psConstData.needsPremultiply |= (1 << i);
          }
       }
 
-      if (!mActivePsConstantsSet || memcmp(&psConstData, &mActivePsConstants, sizeof(PsPushConstants)) != 0) {
+      if (!mActivePsConstantsSet ||
+          memcmp(&psConstData, &mActivePsConstants, sizeof(psConstData)) != 0) {
          mActivePsConstants = psConstData;
          mActivePsConstantsSet = true;
 
-         mActiveCommandBuffer.pushConstants<PsPushConstants>(mPipelineLayout,
-                                                             vk::ShaderStageFlagBits::eFragment,
-                                                             32, { psConstData });
+         mActiveCommandBuffer.pushConstants<spirv::FragmentPushConstants>(
+            mPipelineLayout, vk::ShaderStageFlagBits::eFragment,
+            spirv::FragmentPushConstantsOffset, { psConstData });
       }
    }
 }
@@ -238,11 +267,13 @@ void
 Driver::drawGenericIndexed(latte::VGT_DRAW_INITIATOR drawInit, uint32_t numIndices, void *indices)
 {
    // First lets set up our draw description for everyone
-   auto vgt_dma_index_type = getRegister<latte::VGT_DMA_INDEX_TYPE>(latte::Register::VGT_DMA_INDEX_TYPE);
+   auto pa_su_point_size = getRegister<latte::PA_SU_POINT_SIZE>(latte::Register::PA_SU_POINT_SIZE);
+   auto vgt_index_type = getRegister<latte::VGT_NODMA_INDEX_TYPE>(latte::Register::VGT_INDEX_TYPE);
    auto vgt_primitive_type = getRegister<latte::VGT_PRIMITIVE_TYPE>(latte::Register::VGT_PRIMITIVE_TYPE);
-   auto vgt_dma_num_instances = getRegister<latte::VGT_DMA_NUM_INSTANCES>(latte::Register::VGT_DMA_NUM_INSTANCES);
    auto sq_vtx_base_vtx_loc = getRegister<latte::SQ_VTX_BASE_VTX_LOC>(latte::Register::SQ_VTX_BASE_VTX_LOC);
    auto sq_vtx_start_inst_loc = getRegister<latte::SQ_VTX_START_INST_LOC>(latte::Register::SQ_VTX_START_INST_LOC);
+   auto vgt_dma_num_instances = getRegister<latte::VGT_DMA_NUM_INSTANCES>(latte::Register::VGT_DMA_NUM_INSTANCES);
+   auto vgt_dma_index_type = getRegister<latte::VGT_DMA_INDEX_TYPE>(latte::Register::VGT_DMA_INDEX_TYPE);
    auto vgt_strmout_en = getRegister<latte::VGT_STRMOUT_EN>(latte::Register::VGT_STRMOUT_EN);
 
    bool useStreamOut = vgt_strmout_en.STREAMOUT();
@@ -255,22 +286,24 @@ Driver::drawGenericIndexed(latte::VGT_DRAW_INITIATOR drawInit, uint32_t numIndic
 
    DrawDesc& drawDesc = mDrawCache;
    drawDesc.indices = indices;
-   drawDesc.indexType = vgt_dma_index_type.INDEX_TYPE();
-   drawDesc.indexSwapMode = vgt_dma_index_type.SWAP_MODE();
+   drawDesc.indexType = vgt_index_type.INDEX_TYPE();
+   drawDesc.indexSwapMode = latte::VGT_DMA_SWAP::NONE;
    drawDesc.primitiveType = vgt_primitive_type.PRIM_TYPE();
-   drawDesc.isRectDraw = false;
    drawDesc.numIndices = numIndices;
    drawDesc.baseVertex = sq_vtx_base_vtx_loc.OFFSET();
-   drawDesc.numInstances = vgt_dma_num_instances.NUM_INSTANCES();
+   drawDesc.numInstances = 1;
    drawDesc.baseInstance = sq_vtx_start_inst_loc.OFFSET();
    drawDesc.streamOutEnabled = useStreamOut;
    drawDesc.streamOutContext = mStreamOutContext;
-   mCurrentDraw = &drawDesc;
+   drawDesc.pointSize = pa_su_point_size.WIDTH();
 
-   if (drawDesc.primitiveType == latte::VGT_DI_PRIMITIVE_TYPE::RECTLIST) {
-      drawDesc.isRectDraw = true;
-      decaf_check(drawDesc.numIndices == 4);
+   if (drawInit.SOURCE_SELECT() == latte::VGT_DI_SRC_SEL::DMA) {
+      drawDesc.indexType = vgt_dma_index_type.INDEX_TYPE();
+      drawDesc.indexSwapMode = vgt_dma_index_type.SWAP_MODE();
+      drawDesc.numInstances = vgt_dma_num_instances.NUM_INSTANCES();
    }
+
+   mCurrentDraw = &drawDesc;
 
    // Set up all the required state, ordering here is very important
    if (!checkCurrentVertexShader()) {

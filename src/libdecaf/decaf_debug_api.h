@@ -2,6 +2,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -14,6 +15,8 @@ using VirtualAddress = uint32_t;
 using PhysicalAddress = uint32_t;
 
 using CafeThreadHandle = VirtualAddress;
+
+using PauseCallback = std::function<void()>;
 
 struct AnalyseDatabase
 {
@@ -42,7 +45,7 @@ struct AnalyseDatabase
       const Instruction *instruction = nullptr;
    };
 
-   std::map<uint32_t, Function, std::greater<uint32_t>> functions;
+   std::vector<Function> functions;
    std::unordered_map<uint32_t, Instruction> instructions;
 };
 
@@ -176,6 +179,24 @@ struct CafeThread
 
    //! Machine State Register
    uint32_t msr;
+};
+
+struct CpuBreakpoint
+{
+   enum Type
+   {
+      SingleFire,
+      MultiFire,
+   };
+
+   //! Breakpoint type.
+   Type type;
+
+   //! Address of breakpoint.
+   uint32_t address;
+
+   //! Code at address before we inserted a TW instruction.
+   uint32_t savedCode;
 };
 
 struct CpuContext
@@ -321,6 +342,7 @@ bool pm4CaptureBegin();
 bool pm4CaptureEnd();
 
 // Controller
+void setPauseCallback(PauseCallback callback);
 bool pause();
 bool resume();
 bool isPaused();
@@ -332,7 +354,12 @@ bool hasBreakpoint(VirtualAddress address);
 bool addBreakpoint(VirtualAddress address);
 bool removeBreakpoint(VirtualAddress address);
 
+// CPU
+void sampleCpuBreakpoints(std::vector<CpuBreakpoint> &breakpoints);
+
 // Memory
+bool isValidVirtualAddress(VirtualAddress address);
+size_t getMemoryPageSize();
 size_t readMemory(VirtualAddress address, void *dst, size_t size);
 size_t writeMemory(VirtualAddress address, const void *src, size_t size);
 

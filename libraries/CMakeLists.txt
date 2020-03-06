@@ -1,5 +1,3 @@
-include(ExternalProject)
-
 # addrlib
 add_library(addrlib STATIC
     "addrlib/src/addrinterface.cpp"
@@ -28,6 +26,11 @@ add_library(cereal INTERFACE IMPORTED GLOBAL)
 set_target_properties(cereal PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/cereal/include")
 
+# cnl
+add_library(cnl INTERFACE IMPORTED GLOBAL)
+set_target_properties(cnl PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/cnl/include")
+
 # cpptoml
 add_library(cpptoml INTERFACE IMPORTED GLOBAL)
 set_target_properties(cpptoml PROPERTIES
@@ -39,129 +42,31 @@ add_library(excmd INTERFACE IMPORTED GLOBAL)
 set_target_properties(excmd PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/excmd/src")
 
-# fixed_point
-add_library(fixed_point INTERFACE IMPORTED GLOBAL)
-set_target_properties(fixed_point PROPERTIES
-    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/fixed_point/include")
-
 # fmt
 add_subdirectory(fmt)
 set_target_properties(fmt PROPERTIES FOLDER libraries)
 
-# glbinding
-find_package(glbinding QUIET)
-
-if(NOT glbinding_FOUND)
-    set(GLBINDING_DIR "glbinding")
-    set(GLBINDING_CXX_FLAGS ${CMAKE_CXX_FLAGS})
-
-    if (MSVC)
-        set(GLBINDING_BUILD_SHARED on)
-        set(GLBINDING_CXX_FLAGS "${GLBINDING_CXX_FLAGS} -D_SILENCE_CXX17_ADAPTOR_TYPEDEFS_DEPRECATION_WARNING")
-    else ()
-        set(GLBINDING_BUILD_SHARED off)
-    endif ()
-
-    externalproject_add(glbinding
-        SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${GLBINDING_DIR}"
-        CMAKE_CACHE_ARGS
-            -DCMAKE_C_COMPILER:string=${CMAKE_C_COMPILER}
-            -DCMAKE_C_FLAGS:string=${CMAKE_C_FLAGS}
-            -DCMAKE_CXX_COMPILER:string=${CMAKE_CXX_COMPILER}
-            -DCMAKE_CXX_FLAGS:string=${GLBINDING_CXX_FLAGS}
-            -DBUILD_SHARED_LIBS:string=${GLBINDING_BUILD_SHARED}
-            -DOPTION_BUILD_DOCS:string=off
-            -DOPTION_BUILD_EXAMPLES:string=off
-            -DOPTION_BUILD_TESTS:string=off
-            -DOPTION_BUILD_TOOLS:string=off
-            -DOPTION_BUILD_GPU_TESTS:string=off
-        INSTALL_COMMAND "")
-    externalproject_get_property(glbinding BINARY_DIR)
-    externalproject_add_step(glbinding
-        copy_to_binary
-        DEPENDEES build
-        DEPENDERS install
-        COMMAND ${CMAKE_COMMAND} -E copy_directory "${BINARY_DIR}/${CMAKE_CFG_INTDIR}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${CMAKE_CFG_INTDIR}")
-    set_target_properties(glbinding PROPERTIES FOLDER libraries)
-
-    if (MSVC)
-        set(GLBINDING_IMPORTED_LOCATION
-            IMPORTED_LOCATION_DEBUG "${BINARY_DIR}/Debug/${CMAKE_FIND_LIBRARY_PREFIXES}glbindingd${CMAKE_FIND_LIBRARY_SUFFIXES}"
-            IMPORTED_LOCATION_RELEASE "${BINARY_DIR}/Release/${CMAKE_FIND_LIBRARY_PREFIXES}glbinding${CMAKE_FIND_LIBRARY_SUFFIXES}"
-            IMPORTED_LOCATION_RELWITHDEBINFO "${BINARY_DIR}/RelWithDebInfo/${CMAKE_FIND_LIBRARY_PREFIXES}glbinding${CMAKE_FIND_LIBRARY_SUFFIXES}"
-            IMPORTED_LOCATION_MINSIZEREL "${BINARY_DIR}/MinSizeRel/${CMAKE_FIND_LIBRARY_PREFIXES}glbinding${CMAKE_FIND_LIBRARY_SUFFIXES}")
-    else ()
-        set(GLBINDING_IMPORTED_LOCATION
-            IMPORTED_LOCATION "${BINARY_DIR}/${CMAKE_FIND_LIBRARY_PREFIXES}glbinding.a")
-    endif ()
-
-    add_library(glbinding_import STATIC IMPORTED GLOBAL)
-    add_dependencies(glbinding_import glbinding)
-    set_target_properties(glbinding_import PROPERTIES ${GLBINDING_IMPORTED_LOCATION})
-
-    add_library(glbinding_final INTERFACE)
-    add_dependencies(glbinding_final glbinding_import)
-    target_include_directories(glbinding_final INTERFACE
-        "${CMAKE_CURRENT_SOURCE_DIR}/${GLBINDING_DIR}/source/glbinding/include"
-        "${BINARY_DIR}/source/glbinding/include")
-    target_link_libraries(glbinding_final INTERFACE glbinding_import)
-    set(GLBINDING_LIBRARIES glbinding_final PARENT_SCOPE)
-
-    if (MSVC)
-        install(FILES "${BINARY_DIR}/\${CMAKE_INSTALL_CONFIG_NAME}/${CMAKE_FIND_LIBRARY_PREFIXES}glbinding$<$<CONFIG:Debug>:d>${CMAKE_SHARED_LIBRARY_SUFFIX}"
-                DESTINATION "${CMAKE_INSTALL_PREFIX}")
-    endif ()
-else()
-    set(GLBINDING_LIBRARIES glbinding PARENT_SCOPE)
-endif()
-
 # glslang
-if(DECAF_VULKAN)
-    set(GLSLANG_DIR "glslang")
-    externalproject_add(glslang
-        SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${GLSLANG_DIR}"
-        CMAKE_CACHE_ARGS
-            -DCMAKE_C_COMPILER:string=${CMAKE_C_COMPILER}
-            -DCMAKE_C_FLAGS:string=${CMAKE_C_FLAGS}
-            -DCMAKE_CXX_COMPILER:string=${CMAKE_CXX_COMPILER}
-            -DCMAKE_CXX_FLAGS:string=${CMAKE_CXX_FLAGS}
-            -DBUILD_SHARED_LIBS:string=off
-            -DENABLE_HLSL:string=off
-            -DENABLE_GLSLANG_BINARIES:string=off
-            -DENABLE_OPT:string=on
-            -DENABLE_SPVREMAPPER:string=off
-            -DSKIP_GLSLANG_INSTALL:string=on
-        INSTALL_COMMAND ""
-        )
-    externalproject_get_property(glslang BINARY_DIR)
-    externalproject_add_step(glslang
-        copy_to_binary
-        DEPENDEES build
-        DEPENDERS install
-        COMMAND ${CMAKE_COMMAND} -E copy_directory "${BINARY_DIR}/SPIRV/${CMAKE_CFG_INTDIR}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${CMAKE_CFG_INTDIR}")
-    set_target_properties(glslang PROPERTIES FOLDER libraries)
+if(DECAF_VULKAN OR DECAF_BUILD_TOOLS)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "glslang: BUILD_SHARED_LIBS" FORCE)
+    set(BUILD_TESTING OFF CACHE BOOL "glslang: BUILD_TESTING" FORCE)
+    set(ENABLE_HLSL OFF CACHE BOOL "glslang: ENABLE_HLSL" FORCE)
+    set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "glslang: ENABLE_GLSLANG_BINARIES" FORCE)
+    set(ENABLE_OPT ON CACHE BOOL "glslang: ENABLE_OPT" FORCE)
+    set(ENABLE_SPVREMAPPER OFF CACHE BOOL "glslang: ENABLE_SPVREMAPPER" FORCE)
+    set(SKIP_GLSLANG_INSTALL ON CACHE BOOL "glslang: SKIP_GLSLANG_INSTALL" FORCE)
+    add_subdirectory(glslang)
 
-    if (MSVC)
-        set(SPIRV_IMPORTED_LOCATION
-            IMPORTED_LOCATION_DEBUG "${BINARY_DIR}/SPIRV/Debug/${CMAKE_FIND_LIBRARY_PREFIXES}SPIRV${CMAKE_FIND_LIBRARY_SUFFIXES}"
-            IMPORTED_LOCATION_RELEASE "${BINARY_DIR}/SPIRV/Release/${CMAKE_FIND_LIBRARY_PREFIXES}SPIRV${CMAKE_FIND_LIBRARY_SUFFIXES}"
-            IMPORTED_LOCATION_RELWITHDEBINFO "${BINARY_DIR}/SPIRV/RelWithDebInfo/${CMAKE_FIND_LIBRARY_PREFIXES}SPIRV${CMAKE_FIND_LIBRARY_SUFFIXES}"
-            IMPORTED_LOCATION_MINSIZEREL "${BINARY_DIR}/SPIRV/MinSizeRel/${CMAKE_FIND_LIBRARY_PREFIXES}SPIRV${CMAKE_FIND_LIBRARY_SUFFIXES}")
-    else ()
-        set(SPIRV_IMPORTED_LOCATION
-            IMPORTED_LOCATION "${BINARY_DIR}/SPIRV/${CMAKE_FIND_LIBRARY_PREFIXES}SPIRV.a")
-    endif ()
+    macro(remove_flag_from_target _target _flag)
+        get_target_property(_target_cxx_flags ${_target} COMPILE_OPTIONS)
+        if(_target_cxx_flags)
+            list(REMOVE_ITEM _target_cxx_flags ${_flag})
+            set_target_properties(${_target} PROPERTIES COMPILE_OPTIONS "${_target_cxx_flags}")
+        endif()
+    endmacro()
 
-    add_library(spirv_import STATIC IMPORTED GLOBAL)
-    add_dependencies(spirv_import glslang)
-    set_target_properties(spirv_import PROPERTIES ${SPIRV_IMPORTED_LOCATION})
-
-    add_library(spirv_final INTERFACE)
-    add_dependencies(spirv_final spirv_import)
-    target_include_directories(spirv_final INTERFACE
-        "${CMAKE_CURRENT_SOURCE_DIR}/${GLSLANG_DIR}/SPIRV")
-    target_link_libraries(spirv_final INTERFACE spirv_import)
-    set(SPIRV_LIBRARIES spirv_final PARENT_SCOPE)
+    # As we inherit spv::Builder in libgpu, we must remove -fno-rtti
+    remove_flag_from_target(SPIRV -fno-rtti)
 endif()
 
 # gsl
@@ -196,8 +101,17 @@ set_target_properties(pugixml PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/pugixml/src")
 
 # spdlog
-add_library(spdlog INTERFACE IMPORTED GLOBAL)
-set_target_properties(spdlog PROPERTIES
-    INTERFACE_COMPILE_DEFINITIONS "SPDLOG_FMT_EXTERNAL"
-    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/spdlog/include"
-    INTERFACE_LINK_LIBRARIES fmt)
+add_subdirectory(spdlog)
+set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "Use external fmt library instead of bundled" FORCE)
+set_target_properties(spdlog PROPERTIES FOLDER libraries)
+
+# Qt Advanced Docking System
+if(DECAF_QT)
+    set(BUILD_STATIC TRUE CACHE BOOL "ADS: Build the static library")
+    set(BUILD_EXAMPLES FALSE CACHE BOOL "ADS: Build the examples")
+    add_subdirectory(qtads EXCLUDE_FROM_ALL)
+    set_target_properties(qtadvanceddocking PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/qtads/src"
+        INTERFACE_COMPILE_DEFINITIONS "ADS_STATIC"
+        FOLDER libraries)
+endif()

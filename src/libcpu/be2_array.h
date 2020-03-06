@@ -1,8 +1,11 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <initializer_list>
+#include <stdexcept>
 #include <type_traits>
 #include <string_view>
+
 #include "be2_val.h"
 #include "pointer.h"
 
@@ -83,6 +86,18 @@ public:
       mValues[src.size()] = char { 0 };
    }
 
+   be2_array(std::initializer_list<Type> list)
+   {
+      if (list.size() > Size) {
+         throw std::out_of_range("invalid be2_array<T, N> initializer_list");
+      }
+
+      auto i = 0u;
+      for (auto &item : list) {
+         mValues[i] = item;
+      }
+   }
+
    be2_array(const std::array<Type, Size> &other)
    {
       for (auto i = 0u; i < Size; ++i) {
@@ -91,8 +106,8 @@ public:
    }
 
    template<size_t N,
-            typename = typename std::enable_if<Size >= N && std::is_same<char, Type>::value>::type>
-   be2_array &operator =(const char (&src)[N])
+            typename = typename std::enable_if<Size >= N>::type>
+   be2_array &operator =(const Type (&src)[N])
    {
       std::copy_n(src, N, mValues);
       return *this;
@@ -229,8 +244,8 @@ class be2_array_iterator
 
 public:
    be2_array_iterator(be2_array<Type, Size> &arr, size_type index) :
-      mArray(arr),
-      mIndex(index)
+      mIndex(index),
+      mArray(arr)
    {
    }
 

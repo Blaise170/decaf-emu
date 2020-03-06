@@ -9,7 +9,7 @@
 #include "coreinit_systemheap.h"
 #include "coreinit_systeminfo.h"
 
-#include "cafe/cafe_ppc_interface_invoke.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 #include "cafe/cafe_stackobject.h"
 #include "cafe/libraries/cafe_hle.h"
 #include "cafe/loader/cafe_loader_rpl.h"
@@ -19,7 +19,9 @@
 #include "debug_api/debug_api_controller.h"
 
 #include <common/strutils.h>
-#include <fmt/format.h>
+#include <fmt/core.h>
+#include <gsl.h>
+#include <libcpu/cpu_formatters.h>
 
 namespace cafe::coreinit
 {
@@ -710,7 +712,8 @@ release(OSDynLoad_ModuleHandle moduleHandle,
    auto notifyCallbackArray = virt_ptr<OSDynLoad_NotifyCallback> { nullptr };
 
    if (isFirstUnloadModule) {
-      if (notifyCallbackCount = getNotifyCallbackCount()) {
+      notifyCallbackCount = getNotifyCallbackCount();
+      if (notifyCallbackCount) {
          auto allocSize = static_cast<uint32_t>(
             notifyCallbackCount * sizeof(OSDynLoad_NotifyCallback));
 
@@ -1166,8 +1169,8 @@ executeDynamicLink(virt_ptr<RPL_DATA> rpx,
                sizeof(loader::LOADER_MinFileInfo));
    minFileInfo->size = static_cast<uint32_t>(sizeof(loader::LOADER_MinFileInfo));
    minFileInfo->version = 4u;
-   if (error = buildKernelNotify(sDynLoadData->linkingRplList, &linkInfo, rpl)) {
-      return error;
+   if (auto notifyError = buildKernelNotify(sDynLoadData->linkingRplList, &linkInfo, rpl)) {
+      return notifyError;
    }
 
    // Call the loader to link the rpx
@@ -1707,7 +1710,7 @@ internalAcquire(virt_ptr<const char> name,
 
       notifyCallbackArray = virt_cast<OSDynLoad_NotifyCallback *>(
          rplSysHeapAlloc("RPL_NOTIFY_ARRAY",
-                         static_cast<uint32_t>(notifyCallbackCount * sizeof(OSDynLoad_NotifyCallback)),
+                         allocSize,
                          4));
       if (!notifyCallbackArray) {
          setFatalErrorInfo2(
@@ -1797,7 +1800,7 @@ internalAcquire(virt_ptr<const char> name,
    minFileInfo->outNumberOfSections = virt_addrof(rplData->sectionInfoCount);
    minFileInfo->outSizeOfFileInfo = virt_addrof(rplData->userFileInfoSize);
 
-   if (auto error = kernel::loaderPrep(minFileInfo)) {
+   if (auto prepError = kernel::loaderPrep(minFileInfo)) {
       if (minFileInfo->fatalErr) {
          setFatalErrorInfo(
             minFileInfo->fatalMsgType,
@@ -1807,7 +1810,7 @@ internalAcquire(virt_ptr<const char> name,
             virt_addrof(minFileInfo->fatalFunction));
       }
 
-      return static_cast<OSDynLoad_Error>(error);
+      return static_cast<OSDynLoad_Error>(prepError);
    }
 
    auto kernelHandleCleanup =
@@ -1837,12 +1840,12 @@ internalAcquire(virt_ptr<const char> name,
    }
 
    // Allocate a DynLoad handle for the new RPL
-   if (auto error = OSHandle_Alloc(virt_addrof(sDynLoadData->handleTable),
-                                   rplData, nullptr,
-                                   virt_addrof(rplData->handle))) {
-      setFatalErrorInfo2(minFileInfo->fileLocation, error, false,
+   if (auto allocError = OSHandle_Alloc(virt_addrof(sDynLoadData->handleTable),
+                                        rplData, nullptr,
+                                        virt_addrof(rplData->handle))) {
+      setFatalErrorInfo2(minFileInfo->fileLocation, allocError, false,
                          1195, "__OSDynLoad_InternalAcquire");
-      return static_cast<OSDynLoad_Error>(error);
+      return static_cast<OSDynLoad_Error>(allocError);
    }
 
    // Prepare load
@@ -1996,7 +1999,7 @@ doImports(virt_ptr<RPL_DATA> rplData)
                prev = itr;
             }
 
-            while (itr = itr->next) {
+            while ((itr = itr->next)) {
                if (itr == importModule) {
                   if (prev) {
                      prev->next = rplData->next;
@@ -2601,7 +2604,7 @@ tls_get_addr(virt_ptr<tls_index> index)
       // Find the module for this tls index
       auto module = virt_ptr<RPL_DATA> { nullptr };
       for (module = sDynLoadData->rplDataList; module; module = module->next) {
-         if (module->userFileInfo->tlsModuleIndex == index->moduleIndex) {
+         if (module->userFileInfo->tlsModuleIndex == static_cast<int16_t>(index->moduleIndex)) {
             break;
          }
       }

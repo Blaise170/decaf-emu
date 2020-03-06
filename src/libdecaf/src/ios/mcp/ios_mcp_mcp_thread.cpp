@@ -58,12 +58,24 @@ mcpIoctl(phys_ptr<ResourceRequest> request)
    auto &ioctl = request->requestData.args.ioctl;
 
    switch (static_cast<MCPCommand>(request->requestData.args.ioctl.request)) {
+   case MCPCommand::DeviceList:
+      if (ioctl.inputBuffer &&
+          ioctl.inputLength == sizeof(MCPRequestDeviceList) &&
+          ioctl.outputBuffer &&
+          ioctl.outputLength >= sizeof(MCPDevice)) {
+         error = mcpDeviceList(phys_cast<const MCPRequestDeviceList *>(ioctl.inputBuffer),
+                               phys_cast<MCPDevice *>(ioctl.outputBuffer),
+                               ioctl.outputLength);
+      } else {
+         error = MCPError::InvalidParam;
+      }
+      break;
    case MCPCommand::GetFileLength:
       if (ioctl.inputBuffer &&
           ioctl.inputLength == sizeof(MCPRequestGetFileLength) &&
           !ioctl.outputBuffer &&
           !ioctl.outputLength) {
-         error = mcpGetFileLength(phys_cast<MCPRequestGetFileLength *>(ioctl.inputBuffer));
+         error = mcpGetFileLength(phys_cast<const MCPRequestGetFileLength *>(ioctl.inputBuffer));
       } else {
          error = MCPError::InvalidParam;
       }
@@ -79,7 +91,7 @@ mcpIoctl(phys_ptr<ResourceRequest> request)
    case MCPCommand::LoadFile:
       if (ioctl.inputLength >= sizeof(MCPResponseGetTitleId) &&
           ioctl.outputLength) {
-         error = mcpLoadFile(phys_cast<MCPRequestLoadFile *>(ioctl.inputBuffer),
+         error = mcpLoadFile(phys_cast<const MCPRequestLoadFile *>(ioctl.inputBuffer),
                              ioctl.outputBuffer,
                              ioctl.outputLength);
       } else {
@@ -91,7 +103,7 @@ mcpIoctl(phys_ptr<ResourceRequest> request)
           ioctl.inputLength == sizeof(MCPRequestPrepareTitle) &&
           ioctl.outputBuffer &&
           ioctl.outputLength == sizeof(MCPResponsePrepareTitle)) {
-         error = mcpPrepareTitle52(phys_cast<MCPRequestPrepareTitle *>(ioctl.inputBuffer),
+         error = mcpPrepareTitle52(phys_cast<const MCPRequestPrepareTitle *>(ioctl.inputBuffer),
                                    phys_cast<MCPResponsePrepareTitle *>(ioctl.outputBuffer));
       } else {
          error = MCPError::InvalidParam;
@@ -101,7 +113,23 @@ mcpIoctl(phys_ptr<ResourceRequest> request)
       if (ioctl.inputBuffer &&
           ioctl.inputLength == sizeof(MCPRequestSwitchTitle) &&
           !ioctl.outputBuffer && !ioctl.outputLength) {
-         error = mcpSwitchTitle(phys_cast<MCPRequestSwitchTitle *>(ioctl.inputBuffer));
+         error = mcpSwitchTitle(phys_cast<const MCPRequestSwitchTitle *>(ioctl.inputBuffer));
+      } else {
+         error = MCPError::InvalidParam;
+      }
+      break;
+   case MCPCommand::UpdateCheckContext:
+      if (ioctl.outputBuffer &&
+          ioctl.outputLength == sizeof(MCPResponseUpdateCheckContext)) {
+         error = mcpUpdateCheckContext(phys_cast<MCPResponseUpdateCheckContext *>(ioctl.outputBuffer));
+      } else {
+         error = MCPError::InvalidParam;
+      }
+      break;
+   case MCPCommand::UpdateCheckResume:
+      if (ioctl.outputBuffer &&
+          ioctl.outputLength == sizeof(MCPResponseUpdateCheckResume)) {
+         error = mcpUpdateCheckResume(phys_cast<MCPResponseUpdateCheckResume *>(ioctl.outputBuffer));
       } else {
          error = MCPError::InvalidParam;
       }
@@ -126,6 +154,16 @@ mcpIoctlv(phys_ptr<ResourceRequest> request)
           ioctlv.vecs[0].paddr &&
           ioctlv.vecs[0].len == sizeof(MCPResponseGetSysProdSettings)) {
          error = mcpGetSysProdSettings(phys_cast<MCPResponseGetSysProdSettings *>(ioctlv.vecs[0].paddr));
+      } else {
+         error = MCPError::InvalidParam;
+      }
+      break;
+   case MCPCommand::UpdateGetProgress:
+      if (ioctlv.numVecIn == 0 &&
+          ioctlv.numVecOut == 1 &&
+          ioctlv.vecs[0].paddr &&
+          ioctlv.vecs[0].len == sizeof(MCPResponseUpdateProgress)) {
+         error = mcpUpdateGetProgress(phys_cast<MCPResponseUpdateProgress *>(ioctlv.vecs[0].paddr));
       } else {
          error = MCPError::InvalidParam;
       }

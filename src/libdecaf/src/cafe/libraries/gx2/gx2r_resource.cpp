@@ -1,10 +1,10 @@
 #include "gx2.h"
 #include "gx2r_resource.h"
 #include "cafe/libraries/coreinit/coreinit_memdefaultheap.h"
-#include "cafe/cafe_ppc_interface_invoke.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 
 #include <libcpu/be2_struct.h>
-#include <libcpu/cpu.h>
+#include <libcpu/state.h>
 
 namespace cafe::gx2
 {

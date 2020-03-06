@@ -8,12 +8,14 @@
 #include "latte/latte_formats.h"
 #include "latte/latte_constants.h"
 #include "spirv/spirv_translate.h"
+#include "spirv/spirv_pushconstants.h"
 #include "pm4_processor.h"
-#include "vk_mem_alloc.h"
+#include "vk_mem_alloc_decaf.h"
 #include "vulkan_descs.h"
 #include "vulkan_memtracker.h"
 
 #include <atomic>
+#include <common/vulkan_hpp.h>
 #include <condition_variable>
 #include <functional>
 #include <gsl/gsl>
@@ -22,7 +24,6 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
-#include <vulkan/vulkan.hpp>
 
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
@@ -408,7 +409,7 @@ struct DrawDesc
    latte::VGT_INDEX_TYPE indexType;
    latte::VGT_DMA_SWAP indexSwapMode;
    latte::VGT_DI_PRIMITIVE_TYPE primitiveType;
-   bool isRectDraw;
+   uint32_t pointSize;
    uint32_t numIndices;
    uint32_t baseVertex;
    uint32_t numInstances;
@@ -440,56 +441,66 @@ struct DrawDesc
    std::array<DataBufferObject*, latte::MaxStreamOutBuffers> streamOutBuffers = { nullptr };
 };
 
-struct Vec4
+struct VulkanDisplayPipeline
 {
-   float x;
-   float y;
-   float z;
-   float w;
+   vk::SurfaceKHR windowSurface;
+   vk::Format windowSurfaceFormat;
+   uint32_t queueFamilyIndex;
+
+   vk::RenderPass renderPass;
+
+   // Swapchain
+   vk::PresentModeKHR presentMode;
+   vk::SwapchainKHR swapchain;
+   vk::Extent2D swapchainExtents;
+   std::vector<vk::ImageView> swapchainImageViews;
+   std::vector<vk::Framebuffer> framebuffers;
+
+   vk::Sampler trivialSampler;
+   vk::DescriptorSetLayout descriptorSetLayout;
+   vk::PipelineLayout pipelineLayout;
+   vk::Pipeline graphicsPipeline;
+
+   vk::ShaderModule vertexShader;
+   vk::ShaderModule fragmentShader;
+
+   vk::Buffer vertexBuffer;
+   vk::DeviceMemory vertexBufferMemory;
+
+   vk::DescriptorPool descriptorPool;
+   std::vector<vk::DescriptorSet> descriptorSets;
+
+   int frameIndex;
+   std::vector<vk::Fence> renderFences;
+   std::vector<vk::Semaphore> imageAvailableSemaphores;
+   std::vector<vk::Semaphore> renderFinishedSemaphores;
 };
 
-struct VsPushConstants
-{
-   Vec4 posMulAdd;
-   Vec4 zSpaceMul;
-};
-
-struct PsPushConstants
-{
-   uint32_t alphaData;
-   float alphaRef;
-   uint32_t needPremultiply;
-};
-
-class Driver : public gpu::VulkanDriver, public Pm4Processor
+class Driver : public gpu::GraphicsDriver, public Pm4Processor
 {
 public:
    Driver();
    virtual ~Driver();
-   virtual gpu::GraphicsDriverType type() override;
 
-   virtual void initialise(vk::Instance instance,
-                           vk::PhysicalDevice physDevice,
-                           vk::Device drive,
-                           vk::Queue queue,
-                           uint32_t queueFamilyIndex) override;
-   virtual void shutdown() override;
-   virtual void getSwapBuffers(vk::Image &tvImage, vk::ImageView &tvView, vk::Image &drcImage, vk::ImageView &drcView) override;
+   virtual void setWindowSystemInfo(const gpu::WindowSystemInfo &wsi) override;
+   virtual void windowHandleChanged(void *handle) override;
+   virtual void windowSizeChanged(int width, int height) override;
 
    virtual void run() override;
-   virtual void stop() override;
    virtual void runUntilFlip() override;
+   virtual void stop() override;
 
-   virtual float getAverageFPS() override;
-   virtual float getAverageFrametimeMS() override;
-
-   virtual gpu::VulkanDriver::DebuggerInfo *
-   getDebuggerInfo() override;
+   virtual gpu::GraphicsDriverType type() override;
+   virtual gpu::GraphicsDriverDebugInfo *getDebugInfo() override;
 
    virtual void notifyCpuFlush(phys_addr address, uint32_t size) override;
    virtual void notifyGpuFlush(phys_addr address, uint32_t size) override;
 
 protected:
+   void initialise(vk::Instance instance, vk::PhysicalDevice physDevice,
+                   vk::Device device, vk::Queue queue,
+                   uint32_t queueFamilyIndex);
+   void destroy();
    void initialiseBlankSampler();
    void initialiseBlankImage();
    void initialiseBlankBuffer();
@@ -498,6 +509,8 @@ protected:
    void validateDevice();
 
    ResourceUsageMeta getResourceUsageMeta(ResourceUsage usage);
+   void renderDisplay();
+   void destroyDisplayPipeline();
 
    // Command Buffer Stuff
    void beginCommandGroup();
@@ -520,14 +533,16 @@ protected:
    void addRetireTask(std::function<void()> fn);
 
    // Retiling
-   void dispatchGpuTile(vk::CommandBuffer &commandBuffer,
+   void dispatchGpuTile(const gpu7::tiling::RetileInfo& retileInfo,
+                        vk::CommandBuffer &commandBuffer,
                         vk::Buffer dstBuffer, uint32_t dstOffset,
                         vk::Buffer srcBuffer, uint32_t srcOffset,
-                        const gpu7::tiling::vulkan::RetileInfo& retileInfo);
-   void dispatchGpuUntile(vk::CommandBuffer &commandBuffer,
+                        uint32_t firstSlice, uint32_t numSlices);
+   void dispatchGpuUntile(const gpu7::tiling::RetileInfo& retileInfo,
+                          vk::CommandBuffer& commandBuffer,
                           vk::Buffer dstBuffer, uint32_t dstOffset,
                           vk::Buffer srcBuffer, uint32_t srcOffset,
-                          const gpu7::tiling::vulkan::RetileInfo& retileInfo);
+                          uint32_t firstSlice, uint32_t numSlices);
 
    // Query Pools
    vk::QueryPool allocateOccQueryPool();
@@ -615,7 +630,7 @@ protected:
 
    // Indices
    void maybeSwapIndices();
-   void maybeUnpackQuads();
+   void maybeUnpackPrimitiveIndices();
    bool checkCurrentIndices();
    void bindIndexBuffer();
 
@@ -669,6 +684,7 @@ protected:
    void endStreamOut();
 
    // Debug
+   void insertVkMarker(const std::string& text);
    void setVkObjectName(VkBuffer object, const char *name);
    void setVkObjectName(VkSampler object, const char *name);
    void setVkObjectName(VkImage object, const char *name);
@@ -679,7 +695,6 @@ private:
    virtual void decafSetBuffer(const latte::pm4::DecafSetBuffer &data) override;
    virtual void decafCopyColorToScan(const latte::pm4::DecafCopyColorToScan &data) override;
    virtual void decafSwapBuffers(const latte::pm4::DecafSwapBuffers &data) override;
-   virtual void decafCapSyncRegisters(const latte::pm4::DecafCapSyncRegisters &data) override;
    virtual void decafClearColor(const latte::pm4::DecafClearColor &data) override;
    virtual void decafClearDepthStencil(const latte::pm4::DecafClearDepthStencil &data) override;
    virtual void decafOSScreenFlip(const latte::pm4::DecafOSScreenFlip &data) override;
@@ -697,8 +712,6 @@ private:
    virtual void streamOutBufferUpdate(const latte::pm4::StreamOutBufferUpdate &data) override;
    virtual void surfaceSync(const latte::pm4::SurfaceSync &data) override;
 
-   virtual void applyRegister(latte::Register reg) override;
-
 private:
    enum class RunState
    {
@@ -707,15 +720,18 @@ private:
       Stopped
    };
 
+   VulkanDisplayPipeline mDisplayPipeline =  { };
+   vk::PhysicalDeviceTransformFeedbackFeaturesEXT mSupportedFeaturesTransformFeedback;
+   vk::PhysicalDeviceFeatures2 mSupportedFeatures;
+
    std::atomic<RunState> mRunState = RunState::None;
-   gpu::VulkanDriver::DebuggerInfo mDebuggerInfo;
+   gpu::VulkanDriverDebugInfo mDebugInfo;
    std::thread mFenceThread;
-   std::thread mThread;
    std::mutex mFenceMutex;
-   std::list<SyncWaiter*> mFencesWaiting;
-   std::list<SyncWaiter*> mFencesPending;
+   std::list<SyncWaiter *> mFencesWaiting;
+   std::list<SyncWaiter *> mFencesPending;
    std::condition_variable mFenceSignal;
-   std::vector<SyncWaiter*> mWaiterPool;
+   std::vector<SyncWaiter *> mWaiterPool;
    VmaAllocator mAllocator;
    uint64_t mMemChangeCounter = 0;
    uint64_t *mLastOccQueryAddr = nullptr;
@@ -731,9 +747,9 @@ private:
    uint64_t mActiveBatchIndex = 0;
 
    bool mActiveVsConstantsSet = false;
-   VsPushConstants mActiveVsConstants;
+   spirv::VertexPushConstants mActiveVsConstants;
    bool mActivePsConstantsSet = false;
-   PsPushConstants mActivePsConstants;
+   spirv::FragmentPushConstants mActivePsConstants;
 
    bool mLastIndexBufferSet = false;
    IndexBufferCache mLastIndexBuffer;
@@ -741,24 +757,23 @@ private:
    vk::DescriptorSetLayout mBaseDescriptorSetLayout;
    vk::PipelineLayout mPipelineLayout;
 
-   std::array<StreamContextObject*, latte::MaxStreamOutBuffers> mStreamOutContext = { nullptr };
+   std::array<StreamContextObject *, latte::MaxStreamOutBuffers> mStreamOutContext = { nullptr };
    std::vector<DrawDesc> mPendingDraws;
-   DrawDesc *mCurrentDraw;
+   DrawDesc *mCurrentDraw = nullptr;
 
    DrawDesc mDrawCache;
 
    std::vector<MemChangeRecord> mDirtyMemCaches;
 
+   std::vector<uint8_t> mScratchRetiling;
    std::vector<uint8_t> mScratchIdxSwap;
-   std::vector<uint8_t> mScratchIdxDequad;
-   std::vector<vk::DescriptorImageInfo> mScratchImageInfos;
-   std::vector<vk::DescriptorBufferInfo> mScratchBufferInfos;
+   std::vector<uint8_t> mScratchIdxPrim;
    std::vector<vk::WriteDescriptorSet> mScratchDescriptorWrites;
 
    using duration_system_clock = std::chrono::duration<double, std::chrono::system_clock::period>;
    using duration_ms = std::chrono::duration<double, std::chrono::milliseconds::period>;
    std::chrono::time_point<std::chrono::system_clock> mLastSwap;
-   duration_system_clock mAverageFrameTime;
+   duration_system_clock mAverageFrameTime { 0.0 };
 
    vk::PhysicalDevice mPhysDevice;
    vk::Device mDevice;
@@ -771,7 +786,7 @@ private:
    vk::Buffer mBlankBuffer;
    SwapChainObject *mTvSwapChain = nullptr;
    SwapChainObject *mDrcSwapChain = nullptr;
-   RenderPassObject *mRenderPass;
+   RenderPassObject *mRenderPass = nullptr;
    std::array<std::array<std::vector<StagingBuffer *>, 20>, 3> mStagingBuffers;
    std::vector<StreamContextObject *> mStreamOutContextPool;
    std::vector<vk::DescriptorPool> mDescriptorPools;
@@ -793,10 +808,10 @@ private:
    gpu7::tiling::vulkan::Retiler mGpuRetiler;
    DriverMemoryTracker mMemTracker;
 
-   bool mDebug;
-   bool mDumpShaders;
-   bool mDumpShaderBinariesOnly;
-   bool mDumpTextures;
+   bool mDebug = false;
+   bool mDumpShaders = false;
+   bool mDumpShaderBinariesOnly = false;
+   bool mDumpTextures = false;
 };
 
 } // namespace vulkan

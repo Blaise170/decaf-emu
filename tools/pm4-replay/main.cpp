@@ -1,13 +1,13 @@
 #include "config.h"
 #include "sdl_window.h"
 
-#include <common-sdl/decafsdl_config.h>
 #include <common/log.h>
 #include <excmd.h>
 #include <iostream>
 #include <libcpu/cpu.h>
 #include <libcpu/mem.h>
 #include <libdecaf/decaf.h>
+#include <libdecaf/decaf_config.h>
 #include <libdecaf/decaf_log.h>
 #include <libgpu/gpu_config.h>
 #include <spdlog/spdlog.h>
@@ -18,7 +18,7 @@ namespace config
 bool dump_drc_frames = false;
 bool dump_tv_frames = false;
 std::string dump_frames_dir = "frames";
-std::string renderer = "opengl";
+std::string renderer = "vulkan";
 
 } // namespace config
 
@@ -78,18 +78,8 @@ replay(const std::string &path)
       return -1;
    }
 
-   if (config::renderer == "vulkan") {
-      if (!sdl.initVulkanGraphics()) {
-         gCliLog->error("Failed to initialise Vulkan backend.");
-         return -1;
-      }
-   } else if (config::renderer == "opengl") {
-      if (!sdl.initGlGraphics()) {
-         gCliLog->error("Failed to initialise OpenGL backend.");
-         return -1;
-      }
-   } else {
-      gCliLog->error("Unknown display backend {}", config::renderer);
+   if (!sdl.initGraphics()) {
+      gCliLog->error("Failed to initialise graphics backend.");
       return -1;
    }
 
@@ -138,9 +128,6 @@ start(excmd::parser &parser,
       config::renderer = options.get<std::string>("renderer");
    }
 
-   // Always use force_sync for pm4-replay
-   config::display::force_sync = true;
-
    auto traceFile = options.get<std::string>("trace file");
 
    // Initialise libdecaf logger
@@ -151,26 +138,18 @@ start(excmd::parser &parser,
    decaf::setConfig(decafSettings);
    decaf::initialiseLogging("pm4-replay.txt");
 
+   auto gpuSettings = gpu::Settings { };
+   gpuSettings.debug.debug_enabled = true;
+   gpu::setConfig(gpuSettings);
+
    gCliLog = decaf::makeLogger("decaf-pm4-replay");
    gCliLog->set_pattern("[%l] %v");
    gCliLog->info("Trace path {}", traceFile);
 
-   // Let's go boyssssss
-   int result = -1;
-
-   // We need to run the replay on a cpu core.
+   // Initialise CPU to setup physical memory
    cpu::initialise();
-   cpu::setCoreEntrypointHandler(
-      [&](cpu::Core *core) {
-         if (core->id == 1) {
-            result = replay(traceFile);
-         }
-      });
 
-   cpu::start();
-   cpu::join();
-
-   return result;
+   return replay(traceFile);
 }
 
 int main(int argc, char **argv)

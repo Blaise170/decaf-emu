@@ -15,6 +15,7 @@
 
 #include <common/log.h>
 #include <common/platform_dir.h>
+#include <libcpu/cpu_formatters.h>
 #include <libgpu/gpu.h>
 #include <libgpu/latte/latte_pm4_commands.h>
 
@@ -116,7 +117,6 @@ GX2Init(virt_ptr<GX2InitAttrib> attributes)
 
    // Initialise GPU callbacks
    gpu::setFlipCallback(&internal::onFlip);
-   gpu::setSyncRegisterCallback(&internal::captureSyncGpuRegisters);
 
    // Initialise command buffer pools
    internal::initialiseCommandBufferPool(cbPoolBase, cbPoolSize);
@@ -187,7 +187,7 @@ GX2GetMiscParam(GX2MiscParam param)
       return sStateData->hangResetSwapsOutstanding;
       break;
    default:
-      return -1;
+      return static_cast<uint32_t>(-1);
    }
 }
 
@@ -338,16 +338,16 @@ initialiseProfiling(GX2ProfileMode profileMode,
 
    // TODO: Update these GX2ProfileMode values with enum named values
    switch (tossStage) {
-   case 1:
+   case GX2TossStage::Unk1:
       sStateData->profileMode |= 0x60;
       break;
-   case 2:
+   case GX2TossStage::Unk2:
       sStateData->profileMode |= 0x40;
       break;
-   case 7:
+   case GX2TossStage::Unk7:
       sStateData->profileMode |= 0x90;
       break;
-   case 8:
+   case GX2TossStage::Unk8:
       sStateData->profileMode |= 0x10;
       break;
    }

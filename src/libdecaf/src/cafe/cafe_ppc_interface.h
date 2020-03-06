@@ -1,7 +1,9 @@
 #pragma once
+#include <array>
 #include <cstdint>
 #include <common/type_traits.h>
 #include <libcpu/be2_struct.h>
+#include <tuple>
 #include <type_traits>
 
 namespace cafe
@@ -58,7 +60,7 @@ struct is_bitfield_type<T, typename void_t<typename T::BitfieldType>::type> : st
 
 /**
  * A type T is stored in a single GPR register if it is:
- * - sizeof(T) <= 4
+ * - sizeof(T) <= 4 or T is a bool (sizeof bool is not defined)
  * - Not a floating point
  * - Not a var_args type
  * - If it is a cpu function pointer
@@ -67,7 +69,7 @@ struct is_bitfield_type<T, typename void_t<typename T::BitfieldType>::type> : st
  */
 template<typename T>
 using is_gpr32_type = is_true<
-   sizeof(T) <= 4 &&
+   (sizeof(T) <= 4 || std::is_same<bool, T>::value) &&
    !std::is_floating_point<T>::value &&
    !std::is_pointer<T>::value &&
    !std::is_same<var_args, T>::value &&
@@ -214,6 +216,57 @@ struct get_param_infos_impl<GprIndex, FprIndex>
    using type = std::tuple<>;
 };
 
+
+// Creates a runtime data structure of parameter info
+struct RuntimeParamInfo
+{
+   // Required default constructor for empty make_runtime_param_info
+   constexpr RuntimeParamInfo() :
+      reg_type(RegisterType::Gpr32),
+      reg_index(0),
+      is_signed(false),
+      is_pointer(false),
+      is_string(false)
+   {
+   }
+
+   constexpr RuntimeParamInfo(RegisterType type, int index,
+                              bool is_signed, bool is_pointer, bool is_string) :
+      reg_type(type),
+      reg_index(index),
+      is_signed(is_signed),
+      is_pointer(is_pointer),
+      is_string(is_string)
+   {
+   }
+
+   RegisterType reg_type;
+   int reg_index;
+   bool is_signed;
+   bool is_pointer;
+   bool is_string;
+};
+
+template<size_t NumArgs, typename... Ts>
+static constexpr std::array<RuntimeParamInfo, NumArgs>
+make_runtime_param_info(std::tuple<Ts...>)
+{
+   return {
+      RuntimeParamInfo {
+         Ts::reg_type, Ts::reg_index,
+         std::is_signed<typename std::decay<typename Ts::type>::type>::value,
+         cpu::is_cpu_pointer<typename Ts::type>::value || cpu::is_cpu_func_pointer<typename Ts::type>::value,
+         std::is_same<typename Ts::type, virt_ptr<const char>>::value
+      }...
+   };
+}
+template<size_t NumArgs>
+static constexpr std::array<RuntimeParamInfo, NumArgs>
+make_runtime_param_info(std::tuple<>)
+{
+   return {};
+}
+
 // Stores information about a function
 template<typename T>
 struct function_traits;
@@ -221,26 +274,28 @@ struct function_traits;
 template<typename ReturnType, typename... ArgTypes>
 struct function_traits<ReturnType(ArgTypes...)>
 {
-   static constexpr auto is_member_function = false;
-   static constexpr auto num_args = sizeof...(ArgTypes);
-   static constexpr auto has_return_value = !std::is_void<ReturnType>::value;
-
    using return_type = register_type<std::remove_cv_t<ReturnType>>;
    using return_info = param_info_t<ReturnType, return_type::value, return_type::return_index>;
    using param_info = typename get_param_infos_impl<3, 1, ArgTypes...>::type;
+
+   static constexpr auto is_member_function = false;
+   static constexpr auto num_args = sizeof...(ArgTypes);
+   static constexpr auto has_return_value = !std::is_void<ReturnType>::value;
+   static constexpr std::array<RuntimeParamInfo, num_args> runtime_param_info = make_runtime_param_info<num_args>(param_info {});
 };
 
 template<typename ObjectType, typename ReturnType, typename... ArgTypes>
 struct function_traits<ReturnType(ObjectType::*)(ArgTypes...)>
 {
-   static constexpr auto is_member_function = true;
-   static constexpr auto num_args = sizeof...(ArgTypes);
-   static constexpr auto has_return_value = !std::is_void<ReturnType>::value;
-
    using return_type = register_type<std::remove_cv_t<ReturnType>>;
    using return_info = param_info_t<ReturnType, return_type::value, return_type::return_index>;
    using param_info = typename get_param_infos_impl<4, 1, ArgTypes...>::type;
    using object_info = param_info_t<virt_ptr<ObjectType>, RegisterType::Gpr32, 3>;
+
+   static constexpr auto is_member_function = true;
+   static constexpr auto num_args = sizeof...(ArgTypes);
+   static constexpr auto has_return_value = !std::is_void<ReturnType>::value;
+   static constexpr std::array<RuntimeParamInfo, num_args> runtime_param_info = make_runtime_param_info<num_args>(param_info{});
 };
 
 template<typename ObjectType, typename ReturnType, typename... ArgTypes>

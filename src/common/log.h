@@ -1,5 +1,6 @@
 #pragma once
-#include <fmt/format.h>
+#include <fmt/core.h>
+#include <memory>
 #include <string_view>
 
 /**

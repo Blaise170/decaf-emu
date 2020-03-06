@@ -3,7 +3,7 @@
 
 #include "cafe/libraries/cafe_hle_stub.h"
 #include "cafe/libraries/ghs/cafe_ghs_malloc.h"
-#include "cafe/libraries/nn_act/nn_act_lib.h"
+#include "cafe/libraries/nn_act/nn_act_clientstandardservice.h"
 #include "nn/boss/nn_boss_result.h"
 
 using namespace nn::boss;
@@ -85,11 +85,13 @@ Library::registerTitleSymbols()
    RegisterFunctionExportName("ChangeAccount__Q3_2nn4boss5TitleFUc",
                               Title_ChangeAccount);
 
-   registerTypeInfo<Title>(
+   RegisterTypeInfo(
+      Title,
       "nn::boss::Title",
       {
          "__dt__Q3_2nn4boss5TitleFv",
-      });
+      },
+      {});
 }
 
 } // namespace cafe::nn_boss

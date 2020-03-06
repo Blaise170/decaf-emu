@@ -3,15 +3,16 @@
 #include "coreinit_driver.h"
 #include "coreinit_memdefaultheap.h"
 #include "coreinit_mutex.h"
+#include "coreinit_scheduler.h"
 #include "coreinit_spinlock.h"
 #include "coreinit_interrupts.h"
 #include "coreinit_osreport.h"
 
-#include "cafe/cafe_ppc_interface_invoke.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 #include "cafe/kernel/cafe_kernel_process.h"
 
 #include <common/bitfield.h>
-#include <libcpu/cpu.h>
+#include <libcpu/state.h>
 
 namespace cafe::coreinit
 {
@@ -150,6 +151,7 @@ void
 ghs_PPCExit(int32_t code)
 {
    internal::driverOnDone();
+   internal::pauseCoreTime(true);
    kernel::exitProcess(code);
 }
 

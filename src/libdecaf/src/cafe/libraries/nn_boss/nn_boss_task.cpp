@@ -3,7 +3,7 @@
 
 #include "cafe/libraries/cafe_hle_stub.h"
 #include "cafe/libraries/ghs/cafe_ghs_malloc.h"
-#include "cafe/libraries/nn_act/nn_act_lib.h"
+#include "cafe/libraries/nn_act/nn_act_clientstandardservice.h"
 #include "nn/boss/nn_boss_result.h"
 
 using namespace nn::boss;
@@ -186,11 +186,13 @@ Library::registerTaskSymbols()
    RegisterFunctionExportName("GetTitleID__Q3_2nn4boss4TaskCFv",
                               Task_GetTitleID);
 
-   registerTypeInfo<Task>(
+   RegisterTypeInfo(
+      Task,
       "nn::boss::Task",
       {
          "__dt__Q3_2nn4boss4TaskFv",
-      });
+      },
+      {});
 }
 
 } // namespace cafe::nn_boss

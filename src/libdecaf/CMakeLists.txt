@@ -7,7 +7,7 @@ file(GLOB_RECURSE SOURCE_FILES *.cpp)
 file(GLOB_RECURSE HEADER_FILES *.h)
 
 add_library(libdecaf STATIC ${SOURCE_FILES} ${HEADER_FILES})
-GroupSources(src)
+GroupSources("Source Files" src)
 
 target_compile_definitions(libdecaf PRIVATE
     DECAF_INSTALL_RESOURCESDIR="${DECAF_INSTALL_RESOURCESDIR}")
@@ -18,11 +18,13 @@ target_include_directories(libdecaf PRIVATE
 target_link_libraries(libdecaf
     addrlib
     common
-    fixed_point
+    cnl
     imgui
     libcpu
     libgfd
     libgpu
+    CARES::CARES
+    LibUV::LibUV
     OpenSSL::SSL
     pugixml
     ZLIB::ZLIB
@@ -63,8 +65,15 @@ if(DECAF_FFMPEG)
 endif()
 
 if(MSVC)
-    target_link_libraries(libdecaf ws2_32)
+    target_link_libraries(libdecaf Crypt32 ws2_32 Psapi IPHLPAPI userenv)
     target_compile_options(libdecaf PUBLIC /wd4251)
 endif()
 
-enable_pch(libdecaf)
+if(DECAF_PCH)
+    target_precompile_headers(libdecaf
+      PRIVATE
+        <common/pch.h>
+    )
+
+    AutoGroupPCHFiles()
+endif()

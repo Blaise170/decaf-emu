@@ -8,7 +8,7 @@ vk::Instance gVulkan = {};
 vk::PhysicalDevice gPhysDevice = {};
 vk::Device gDevice = {};
 vk::Queue gQueue = {};
-uint32_t gQueueFamilyIndex = -1;
+uint32_t gQueueFamilyIndex = static_cast<uint32_t>(-1);
 vk::CommandPool gCommandPool = {};
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL
@@ -127,7 +127,7 @@ initialiseVulkan()
 
    // Set up our debug reporting callback
    vk::DispatchLoaderDynamic vkDynLoader;
-   vkDynLoader.init(gVulkan);
+   vkDynLoader.init(gVulkan, ::vkGetInstanceProcAddr);
    if (vkDynLoader.vkCreateDebugReportCallbackEXT) {
       vk::DebugReportCallbackCreateInfoEXT dbgReportDesc;
       dbgReportDesc.flags =

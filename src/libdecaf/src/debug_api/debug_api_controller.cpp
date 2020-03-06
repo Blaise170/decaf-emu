@@ -7,7 +7,9 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
-#include <libcpu/cpu.h>
+#include <libcpu/state.h>
+#include <libcpu/mem.h>
+#include <libcpu/cpu_control.h>
 #include <libcpu/cpu_breakpoints.h>
 #include <libcpu/espresso/espresso_disassembler.h>
 #include <libcpu/espresso/espresso_instructionset.h>
@@ -45,6 +47,9 @@ struct Controller
    std::array<CpuContext, 3> contexts;
 
    bool entryPointFound = false;
+
+   //! Callback to call on debug interrupt
+   PauseCallback callback;
 } sController;
 
 static bool
@@ -84,6 +89,15 @@ copyPauseContext(int core)
    context.dar = pauseContext->dar;
    context.dsisr = pauseContext->dsisr;
    context.srr0 = pauseContext->srr0;
+
+   // If we are inside a kernel call we need to adjust gpr[1] due to how we
+   // use lazy stack frame creation
+   auto instr = mem::read<espresso::Instruction>(pauseContext->nia - 4);
+   auto data = espresso::decodeInstruction(instr);
+   if (data && data->id == espresso::InstructionID::kc) {
+      context.gpr[1] = pauseContext->systemCallStackHead;
+   }
+
    return true;
 }
 
@@ -91,6 +105,12 @@ bool
 ready()
 {
    return sController.entryPointFound;
+}
+
+void
+setPauseCallback(PauseCallback callback)
+{
+   sController.callback = callback;
 }
 
 bool
@@ -199,6 +219,10 @@ hasBreakpoint(VirtualAddress address)
 bool
 addBreakpoint(VirtualAddress address)
 {
+   if (!cpu::isValidAddress(static_cast<cpu::VirtualAddress>(address))) {
+      return false;
+   }
+
    cpu::addBreakpoint(address, cpu::Breakpoint::MultiFire);
    return true;
 }
@@ -206,6 +230,10 @@ addBreakpoint(VirtualAddress address)
 bool
 removeBreakpoint(VirtualAddress address)
 {
+   if (!cpu::isValidAddress(static_cast<cpu::VirtualAddress>(address))) {
+      return false;
+   }
+
    cpu::removeBreakpoint(address);
    return true;
 }
@@ -240,6 +268,11 @@ handleDebugBreakInterrupt()
       sController.isPaused.store(true);
       sController.coresPausing.store(0);
       sController.coresResuming.store(0);
+   }
+
+   // Call the pause callback
+   if (sController.callback) {
+      sController.callback();
    }
 
    // Spin around the release condition while we are paused

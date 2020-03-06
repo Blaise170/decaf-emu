@@ -21,8 +21,6 @@
 namespace cafe::loader::internal
 {
 
-constexpr auto MaxModuleNameLen = 0x3Bu;
-
 int32_t
 LiLoadForPrep(virt_ptr<char> moduleName,
               uint32_t moduleNameLen,
@@ -96,7 +94,8 @@ LOADER_Prep(kernel::UniqueProcessId upid,
    }
 
    if (minFileInfo) {
-      if (auto error = LiValidateMinFileInfo(minFileInfo, "LOADER_Prep")) {
+      error = LiValidateMinFileInfo(minFileInfo, "LOADER_Prep");
+      if (error) {
          LiCloseBufferIfError();
          return error;
       }

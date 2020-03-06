@@ -104,7 +104,6 @@ IOS_CreateTimer(std::chrono::microseconds delay,
    }
 
    if (delay.count() || period.count()) {
-      auto now = std::chrono::steady_clock::now();
       timer.nextTriggerTime = internal::getUpTime64() + internal::durationToTicks(delay);
       if (internal::startTimer(phys_addrof(timer)) == 0) {
          internal::setAlarm(timer.nextTriggerTime);
@@ -188,7 +187,6 @@ IOS_RestartTimer(TimerId timerId,
                  std::chrono::microseconds period)
 {
    phys_ptr<Timer> timer;
-   auto &timerManager = sData->timerManager;
 
    auto error = internal::getTimer(timerId, &timer);
    if (error < Error::OK) {

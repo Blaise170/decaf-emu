@@ -2,7 +2,7 @@
 
 #include <common/decaf_assert.h>
 #include <common/log.h>
-#include <fmt/format.h>
+#include <fmt/core.h>
 
 namespace latte
 {
@@ -87,7 +87,7 @@ validateSurfaceFormat(SurfaceFormat format)
    case SurfaceFormat::NV12:
       return;
    default:
-      decaf_abort("Unexpected generated surface format");
+      decaf_abort(fmt::format("Unexpected generated surface format {}", format));
    }
 }
 
@@ -348,7 +348,6 @@ getDataFormatName(latte::SQ_DATA_FORMAT format)
 DataFormatMeta
 getDataFormatMeta(latte::SQ_DATA_FORMAT format)
 {
-   static const auto DFT_NONE = DataFormatMetaType::None;
    static const auto DFT_UINT = DataFormatMetaType::UINT;
    static const auto DFT_FLOAT = DataFormatMetaType::FLOAT;
    static const auto BADELEM = DataFormatMetaElem { 0, 0, 0 };

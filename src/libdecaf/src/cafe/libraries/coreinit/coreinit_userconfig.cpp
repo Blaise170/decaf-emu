@@ -3,11 +3,11 @@
 #include "coreinit_ipcbufpool.h"
 #include "coreinit_mutex.h"
 #include "coreinit_userconfig.h"
-#include "cafe/cafe_ppc_interface_invoke.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 #include "cafe/cafe_stackobject.h"
 
-#include <fmt/format.h>
-#include <libcpu/cpu.h>
+#include <fmt/core.h>
+#include <libcpu/state.h>
 
 namespace cafe::coreinit
 {
@@ -125,15 +125,16 @@ ucHandleIosResult(UCError result,
 
                if (settings[i].error) {
                   result = settings[i].error;
+                  continue;
                }
 
-               if (!settings[i].data) {
-                  result = UCError::InvalidParam;
-               }
+               if (settings[i].dataSize) {
+                  if (!settings[i].data) {
+                     result = UCError::InvalidParam;
+                     continue;
+                  }
 
-               if (settings[i].error == UCError::OK) {
                   auto src = virt_cast<void *>(vecs[i + 1].vaddr);
-
                   switch (settings[i].dataSize) {
                   case 0:
                      continue;
@@ -560,6 +561,12 @@ UCWriteSysConfigAsync(IOSHandle handle,
          if (!vecs[1 + i].vaddr) {
             result = UCError::NoIPCBuffers;
             goto fail;
+         }
+
+         if (settings[i].data) {
+            std::memcpy(virt_cast<void *>(vecs[1 + i].vaddr).get(),
+                        settings[i].data.get(),
+                        settings[i].dataSize);
          }
       } else {
          vecs[1 + i].vaddr = 0u;

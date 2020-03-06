@@ -10,8 +10,10 @@
 #include "cafe_kernel_mmu.h"
 #include "cafe_kernel_process.h"
 #include "cafe_kernel_shareddata.h"
+#include "cafe_kernel_userdrivers.h"
 
 #include "cafe/libraries/cafe_hle.h"
+#include "debug_api/debug_api_controller.h"
 #include "decaf_config.h"
 #include "decaf_configstorage.h"
 #include "decaf_events.h"
@@ -22,6 +24,8 @@
 #include <common/log.h>
 #include <common/platform_dir.h>
 #include <common/strutils.h>
+#include <libcpu/cpu.h>
+#include <libcpu/cpu_formatters.h>
 
 namespace cafe::kernel
 {
@@ -52,6 +56,7 @@ static void
 mainCoreEntryPoint(cpu::Core *core)
 {
    internal::setActiveAddressSpace(&sKernelAddressSpace);
+   internal::initialiseWorkAreaHeap();
    internal::initialiseCoreContext(core);
    internal::initialiseExceptionContext(core);
    internal::initialiseExceptionHandlers();
@@ -71,11 +76,13 @@ mainCoreEntryPoint(cpu::Core *core)
 
    // TODO: This is normally called by root.rpx
    loadShared();
+   internal::registerRootUserDrivers();
 
    // Prepare title
    auto titleInfo = virt_addrof(sKernelData->prepareTitleInfo);
    if (auto error = internal::mcpPrepareTitle(ios::mcp::DefaultTitleId,
-                                              titleInfo)) {
+                                              titleInfo);
+       error || titleInfo->argstr[0] == '\0') {
       // Not a full title - fill out some default values!
       titleInfo->version = 1u;
       titleInfo->cmdFlags = 0u;
@@ -184,7 +191,7 @@ cpuBranchTraceHandler(cpu::Core *core,
 {
    if (sBranchTraceEnabled) {
       auto &data = sKernelData->coreData[core->id];
-      auto error =
+      auto symbolFound =
          internal::findClosestSymbol(virt_addr { target },
                                      virt_addrof(data.symbolDistance),
                                      virt_addrof(data.symbolNameBuffer),
@@ -192,7 +199,7 @@ cpuBranchTraceHandler(cpu::Core *core,
                                      virt_addrof(data.moduleNameBuffer),
                                      data.moduleNameBuffer.size());
 
-      if (!error && data.moduleNameBuffer[0] && data.symbolNameBuffer[0]) {
+      if (symbolFound && data.moduleNameBuffer[0] && data.symbolNameBuffer[0]) {
          gLog->trace("CPU branched to: 0x{:08X} {}|{}+0x{:X}",
                      target,
                      virt_addrof(data.moduleNameBuffer).get(),
@@ -206,7 +213,7 @@ cpuBranchTraceHandler(cpu::Core *core,
 
 static cpu::Core *
 cpuUnknownSystemCallHandler(cpu::Core *core,
-                     uint32_t id)
+                            uint32_t id)
 {
    return cafe::hle::Library::handleUnknownSystemCall(core, id);
 }
@@ -250,6 +257,7 @@ start()
    internal::initialiseStaticExceptionData();
    internal::initialiseStaticIpckDriverData();
    internal::initialiseStaticIpcData();
+   internal::initialiseStaticUserDriversData();
 
    // Setup cpu
    cpu::setCoreEntrypointHandler(&cpuEntrypoint);
@@ -267,7 +275,7 @@ start()
 }
 
 bool
-hasExited()
+stopping()
 {
    return sStopping;
 }
@@ -322,11 +330,18 @@ exit()
                           ios::mcp::PPCAppCommand::PowerOff,
                           nullptr, 0,
                           nullptr, 0);
+   if (error != ios::Error::OK) {
+      gLog->warn("/dev/ppc_app power off ioctl failed with error: {}", error);
+   }
 
    // Set the running flag to false so idle loops exit.
    sStopping = true;
 
    // Tell the CPU to stop.
+   if (decaf::config()->debugger.break_on_exit) {
+      decaf::debug::handleDebugBreakInterrupt();
+   }
+
    cpu::halt();
 
    // Switch to idle context to prevent further execution.

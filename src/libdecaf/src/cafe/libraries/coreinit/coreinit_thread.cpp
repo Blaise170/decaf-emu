@@ -19,6 +19,7 @@
 #include "coreinit_thread.h"
 
 #include "cafe/cafe_stackobject.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 #include "cafe/kernel/cafe_kernel.h"
 #include "cafe/kernel/cafe_kernel_context.h"
 #include "cafe/libraries/cafe_hle.h"
@@ -27,7 +28,8 @@
 #include <common/decaf_assert.h>
 #include <common/log.h>
 #include <fmt/format.h>
-#include <libcpu/cpu.h>
+#include <libcpu/state.h>
+#include <libcpu/cpu_formatters.h>
 #include <limits>
 
 namespace cafe::coreinit
@@ -146,10 +148,7 @@ int32_t
 OSCheckActiveThreads()
 {
    internal::lockScheduler();
-   virt_ptr<OSThread> thread = OSGetCurrentThread();
-
    auto threadCount = internal::checkActiveThreadsNoLock();
-
    internal::unlockScheduler();
    return threadCount;
 }
@@ -477,7 +476,7 @@ OSDetachThread(virt_ptr<OSThread> thread)
  *
  * This function is implicitly called when the thread entry point returns.
  */
-void
+[[noreturn]] void
 OSExitThread(int value)
 {
    auto thread = OSGetCurrentThread();
@@ -500,15 +499,13 @@ OSExitThread(int value)
    }
 
    // Disable interrupts and lock the scheduler
-   auto oldInterrupts = OSDisableInterrupts();
+   OSDisableInterrupts();
    internal::lockScheduler();
 
    // Actually proccess the thread exit
    internal::exitThreadNoLock(value);
 
-   // We should never reach here.  The scheduler handles unlocking
-   //  itself and restoring the interrupt state.
-   decaf_abort("exitThreadNoLock returned");
+   // noreturn
 }
 
 
@@ -553,7 +550,7 @@ OSGetDefaultThread(uint32_t coreID)
 virt_ptr<uint32_t>
 OSGetStackPointer()
 {
-   return virt_cast<uint32_t *>(virt_addr { cpu::this_core::state()->gpr[1] });
+   return virt_cast<uint32_t *>(virt_addr { cpu::this_core::state()->systemCallStackHead });
 }
 
 
@@ -1063,7 +1060,7 @@ OSSleepTicks(OSTime ticks)
  *
  * \returns Returns the thread's previous suspend counter value
  */
-uint32_t
+int32_t
 OSSuspendThread(virt_ptr<OSThread> thread)
 {
    internal::lockScheduler();
@@ -1373,7 +1370,6 @@ defaultThreadEntry(uint32_t coreId,
                     sThreadData->defaultThreadInitRendezvousWaitMask);
    initialiseDeallocatorThread();
    OSExitThread(0);
-   return 0;
 }
 
 static void

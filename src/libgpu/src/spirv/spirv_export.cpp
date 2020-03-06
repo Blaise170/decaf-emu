@@ -6,21 +6,6 @@ namespace spirv
 
 using namespace latte;
 
-static inline VarRefType
-getPixelVarType(PixelOutputType pixelType)
-{
-   switch (pixelType) {
-   case PixelOutputType::FLOAT:
-      return VarRefType::FLOAT;
-   case PixelOutputType::SINT:
-      return VarRefType::INT;
-   case PixelOutputType::UINT:
-      return VarRefType::UINT;
-   }
-
-   decaf_abort("Unexpected color output type")
-}
-
 static inline void
 calcSpecialVecPositions(latte::PA_CL_VS_OUT_CNTL pa_cl_vs_out_cntl, uint32_t *miscVec, uint32_t *ccdist0Vec, uint32_t *ccdist1Vec)
 {
@@ -125,15 +110,15 @@ void Transpiler::translateGenericExport(const ControlFlowInst &cf)
             // Calculate that the number of exports we expect matchs our number
             // of enabled rendertargets, or the search below will fail.
             auto numExports = mSqPgmExportsPs.EXPORT_MODE() >> 1;
-            auto rtExports = 0;
-            rtExports += mCbShaderControl.RT0_ENABLE() ? 1 : 0;
-            rtExports += mCbShaderControl.RT1_ENABLE() ? 1 : 0;
-            rtExports += mCbShaderControl.RT2_ENABLE() ? 1 : 0;
-            rtExports += mCbShaderControl.RT3_ENABLE() ? 1 : 0;
-            rtExports += mCbShaderControl.RT4_ENABLE() ? 1 : 0;
-            rtExports += mCbShaderControl.RT5_ENABLE() ? 1 : 0;
-            rtExports += mCbShaderControl.RT6_ENABLE() ? 1 : 0;
-            rtExports += mCbShaderControl.RT7_ENABLE() ? 1 : 0;
+            auto rtExports = 0u;
+            rtExports += mCbShaderControl.RT0_ENABLE() ? 1u : 0u;
+            rtExports += mCbShaderControl.RT1_ENABLE() ? 1u : 0u;
+            rtExports += mCbShaderControl.RT2_ENABLE() ? 1u : 0u;
+            rtExports += mCbShaderControl.RT3_ENABLE() ? 1u : 0u;
+            rtExports += mCbShaderControl.RT4_ENABLE() ? 1u : 0u;
+            rtExports += mCbShaderControl.RT5_ENABLE() ? 1u : 0u;
+            rtExports += mCbShaderControl.RT6_ENABLE() ? 1u : 0u;
+            rtExports += mCbShaderControl.RT7_ENABLE() ? 1u : 0u;
             decaf_check(rtExports == numExports);
 
             // Skip over render targets which are not being written.
@@ -217,7 +202,6 @@ void Transpiler::translateGenericExport(const ControlFlowInst &cf)
                decaf_check(!pa_cl_vs_out_cntl.CULL_DIST_ENA_5());
                decaf_check(!pa_cl_vs_out_cntl.CULL_DIST_ENA_6());
                decaf_check(!pa_cl_vs_out_cntl.CULL_DIST_ENA_7());
-               decaf_check(!pa_cl_vs_out_cntl.USE_VTX_POINT_SIZE());
                decaf_check(!pa_cl_vs_out_cntl.USE_VTX_EDGE_FLAG());
                decaf_check(!pa_cl_vs_out_cntl.USE_VTX_VIEWPORT_INDX());
                decaf_check(!pa_cl_vs_out_cntl.USE_VTX_KILL_FLAG());

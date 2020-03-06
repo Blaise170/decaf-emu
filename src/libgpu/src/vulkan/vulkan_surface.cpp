@@ -2,7 +2,6 @@
 #include "vulkan_driver.h"
 #include "vulkan_utils.h"
 
-#include "gpu_tiling.h"
 #include "latte/latte_formats.h"
 #include <common/rangecombiner.h>
 
@@ -105,19 +104,21 @@ _getTilingSurfaceDesc(const SurfaceDesc &info)
 
    gpu7::tiling::SurfaceDescription tilingDesc;
    tilingDesc.tileMode = static_cast<gpu7::tiling::TileMode>(info.tileMode);
-   tilingDesc.format = static_cast<AddrFormat>(dataFormat);
+   tilingDesc.format = static_cast<gpu7::tiling::DataFormat>(dataFormat);
    tilingDesc.bpp = bpp;
    tilingDesc.numSamples = 1;
    tilingDesc.width = info.pitch;
    tilingDesc.height = info.height;
    tilingDesc.numSlices = info.depth;
-   tilingDesc.flags.depth = (info.tileType == latte::SQ_TILE_TYPE::DEPTH);
-   tilingDesc.flags.volume = (info.dim == latte::SQ_TEX_DIM::DIM_3D);
    tilingDesc.numFrags = 0;
    tilingDesc.numLevels = 1;
    tilingDesc.pipeSwizzle = (swizzle >> 8) & 1;
    tilingDesc.bankSwizzle = (swizzle >> 9) & 3;
+   tilingDesc.dim = static_cast<gpu7::tiling::SurfaceDim>(info.dim);
 
+   if (info.tileType == latte::SQ_TILE_TYPE::DEPTH) {
+      tilingDesc.use |= gpu7::tiling::SurfaceUse::DepthBuffer;
+   }
    /*
    if (dataFormat >= latte::SQ_DATA_FORMAT::FMT_BC1 && dataFormat <= latte::SQ_DATA_FORMAT::FMT_BC5) {
       tilingDesc.width = (tilingDesc.width + 3) / 4;
@@ -134,7 +135,6 @@ Driver::_getSurfaceMemCache(const SurfaceDesc &info, const gpu7::tiling::Surface
    auto realAddr = info.calcAlignedBaseAddress();
 
    auto sliceSize = _unthickenedSliceSize(tilingInfo);
-   auto imageSize = static_cast<uint32_t>(tilingInfo.surfSize);
    auto alignedDepth = tilingInfo.depth;
 
    // Grab a memory cache object for this image
@@ -414,16 +414,11 @@ Driver::_allocateSurface(const SurfaceDesc& info)
       decaf_abort(fmt::format("Failed to pick vulkan dim for latte dim {}", info.dim));
    }
 
-   auto realAddr = info.calcAlignedBaseAddress();
-   auto swizzle = info.calcSwizzle();
    auto dataFormat = getSurfaceFormatDataFormat(info.format);
-   auto bpp = latte::getDataFormatBitsPerElement(dataFormat);
-   auto isDepthBuffer = (info.tileType == latte::SQ_TILE_TYPE::DEPTH);
 
    auto texelPitch = info.pitch;
    auto texelWidth = info.width;
    auto texelHeight = info.height;
-   auto texelDepth = info.depth;
 
    if (dataFormat >= latte::SQ_DATA_FORMAT::FMT_BC1 && dataFormat <= latte::SQ_DATA_FORMAT::FMT_BC5) {
       // Block compressed textures are tiled/untiled in terms of blocks
@@ -468,7 +463,7 @@ Driver::_allocateSurface(const SurfaceDesc& info)
    subresRange.layerCount = realArrayLayers;
 
    auto tilingDesc = _getTilingSurfaceDesc(info);
-   auto tilingInfo = gpu7::tiling::computeSurfaceInfo(tilingDesc, 0, 0);
+   auto tilingInfo = gpu7::tiling::computeSurfaceInfo(tilingDesc, 0);
 
    // Grab a reference to the memory cache that backs this surface
    auto memCache = _getSurfaceMemCache(info, tilingInfo);
@@ -600,27 +595,27 @@ Driver::_readSurfaceData(SurfaceObject *surface, SurfaceSubRange range)
    auto untiledOffset = memRange.first;
    auto untiledBuffer = memCache->buffer;
 
-   auto retileInfo = gpu7::tiling::vulkan::calculateRetileInfo(surface->tilingDesc, range.firstSlice, range.numSlices);
+   auto retileInfo = gpu7::tiling::computeRetileInfo(surface->tilingInfo);
    if (retileInfo.isTiled) {
       // Lets just double-check everyone is in agreement...
       // TODO: These wont match due to tile thickness needing to be aligned!
       //decaf_check(memRange.first == retileInfo.sliceOffset);
 
       // Calculate our retiling buffer size.
-      auto retileSize = retileInfo.sliceBytes * range.numSlices;
+      auto retileSize = retileInfo.thinSliceBytes * range.numSlices;
 
       // Check that we are aligned based on our thickness.  This is critical to
       // ensure that we correctly invalidate the regions touched by the retiler.
       decaf_check(range.firstSlice % retileInfo.microTileThickness == 0);
       decaf_check(range.numSlices % retileInfo.microTileThickness == 0);
-      retileSize /= retileInfo.microTileThickness;
+      //retileSize /= retileInfo.microTileThickness;
 
       // Grab a staging buffer to write into before the image read
       auto retileStaging = getStagingBuffer(retileSize, StagingBufferType::GpuToGpu);
 
       // Calculate the real offset into our tiled data, the GPU retiler needs a buffer
       // offset that points directly to the slice.
-      auto tiledOffset = retileInfo.sliceOffset;
+      auto tiledOffset = range.firstSlice * retileInfo.thinSliceBytes;
       auto tiledBuffer = untiledBuffer;
 
       // Remap the untiled surface to our staging buffer
@@ -629,7 +624,11 @@ Driver::_readSurfaceData(SurfaceObject *surface, SurfaceSubRange range)
 
       _barrierMemCache(surface->memCache, ResourceUsage::ComputeSsboRead, sectionRange);
 
-      dispatchGpuUntile(mActiveCommandBuffer, untiledBuffer, untiledOffset, tiledBuffer, tiledOffset, retileInfo);
+      dispatchGpuUntile(retileInfo,
+                        mActiveCommandBuffer,
+                        untiledBuffer, untiledOffset,
+                        tiledBuffer, tiledOffset,
+                        range.firstSlice, range.numSlices);
 
       _barrierMemCache(surface->memCache, ResourceUsage::TransferSrc, sectionRange);
    } else {
@@ -683,16 +682,16 @@ Driver::_writeSurfaceData(SurfaceObject *surface, SurfaceSubRange range)
    auto untiledOffset = memRange.first;
    auto untiledBuffer = memCache->buffer;
 
-   auto retileInfo = gpu7::tiling::vulkan::calculateRetileInfo(surface->tilingDesc, range.firstSlice, range.numSlices);
+   auto retileInfo = gpu7::tiling::computeRetileInfo(surface->tilingInfo);
    if (retileInfo.isTiled) {
       // Calculate the retiling buffer size
-      auto retileSize = retileInfo.sliceBytes * range.numSlices;
+      auto retileSize = retileInfo.thinSliceBytes * range.numSlices;
 
       // Check that we are aligned based on our thickness.  This is critical to
       // ensure that we correctly invalidate the regions touched by the retiler.
       decaf_check(range.firstSlice % retileInfo.microTileThickness == 0);
       decaf_check(range.numSlices % retileInfo.microTileThickness == 0);
-      retileSize /= retileInfo.microTileThickness;
+      //retileSize /= retileInfo.microTileThickness;
 
       // Grab our buffer used for retiling
       auto retileStaging = getStagingBuffer(retileSize, StagingBufferType::GpuToGpu);
@@ -741,9 +740,13 @@ Driver::_writeSurfaceData(SurfaceObject *surface, SurfaceSubRange range)
       _barrierMemCache(surface->memCache, ResourceUsage::ComputeSsboWrite, sectionRange);
 
       auto tiledBuffer = memCache->buffer;
-      auto tiledOffset = retileInfo.sliceOffset;
+      auto tiledOffset = range.firstSlice * retileInfo.thinSliceBytes;
 
-      dispatchGpuTile(mActiveCommandBuffer, untiledBuffer, untiledOffset, tiledBuffer, tiledOffset, retileInfo);
+      dispatchGpuTile(retileInfo,
+                      mActiveCommandBuffer,
+                      tiledBuffer, tiledOffset,
+                      untiledBuffer, untiledOffset,
+                      range.firstSlice, range.numSlices);
    }
 }
 

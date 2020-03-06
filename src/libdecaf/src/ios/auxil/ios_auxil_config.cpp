@@ -409,22 +409,22 @@ readItemsFromFile(std::string_view path,
 
    for (auto i = 0u; i < count; ++i) {
       auto item = phys_addrof(items[i]);
-      auto path = std::string { };
-      auto name = std::string { };
+      auto itemPath = std::string { };
+      auto itemName = std::string { };
 
-      error = getItemPathName(item, path, name);
+      error = getItemPathName(item, itemPath, itemName);
       if (error < UCError::OK) {
          item->error = error;
          continue;
       }
 
       // Convert to a pugixml element path
-      auto elementPath = path;
+      auto elementPath = itemPath;
       replace_all(elementPath, '.', '/');
-      if (!path.empty()) {
+      if (!itemPath.empty()) {
          elementPath += '/';
       }
-      elementPath += name;
+      elementPath += itemName;
 
       // Find item in the xml document
       auto node = doc.first_element_by_path(elementPath.c_str());
@@ -440,8 +440,7 @@ readItemsFromFile(std::string_view path,
          continue;
       }
 
-      // Verify data length
-      auto nodeLength = node.attribute("length").as_uint();
+      // Verify complex data
       if (item->dataType != UCDataType::Complex && !item->data) {
          item->error = UCError::InvalidParam;
          continue;
@@ -505,12 +504,12 @@ readItemsFromFile(std::string_view path,
          break;
       case UCDataType::String:
       {
-         auto str = node.text().get();
-         auto size = strlen(str);
+         auto str = trim(node.text().get());
+         auto size = static_cast<uint32_t>(str.length());
 
          if (size < item->dataSize) {
-            std::memcpy(item->data.get(), str, size + 1);
-            item->dataSize = static_cast<uint32_t>(size + 1);
+            std::memcpy(item->data.get(), str.data(), size + 1);
+            item->dataSize = size + 1u;
          } else {
             item->error = UCError::StringTooLong;
             continue;
@@ -519,8 +518,8 @@ readItemsFromFile(std::string_view path,
       }
       case UCDataType::HexBinary:
       {
-         auto src = node.text().get();
-         auto size = strlen(src) / 2;
+         auto src = trim(node.text().get());
+         auto size = static_cast<uint32_t>(src.length() / 2u);
          static auto hexCharToValue =
             [](char c)
             {
@@ -538,11 +537,11 @@ readItemsFromFile(std::string_view path,
          if (size <= item->dataSize) {
             auto dst = phys_cast<uint8_t *>(itemData);
 
-            for (auto i = 0u; i < size; ++i) {
+            for (auto j = 0u; j < size; ++j) {
                auto value = uint8_t { 0 };
-               value |= hexCharToValue(src[i * 2 + 0]) << 4;
-               value |= hexCharToValue(src[i * 2 + 1]);
-               dst[i] = value;
+               value |= hexCharToValue(src[j * 2 + 0]) << 4;
+               value |= hexCharToValue(src[j * 2 + 1]);
+               dst[j] = value;
             }
 
             item->dataSize = static_cast<uint32_t>(size);
@@ -859,22 +858,22 @@ deleteItems(std::string_view fileSysPath,
 
    for (auto i = 0u; i < count; ++i) {
       auto item = phys_addrof(items[i]);
-      auto path = std::string { };
-      auto name = std::string { };
+      auto itemPath = std::string { };
+      auto itemName = std::string { };
 
-      error = getItemPathName(item, path, name);
+      error = getItemPathName(item, itemPath, itemName);
       if (error < UCError::OK) {
          item->error = error;
          continue;
       }
 
       // Convert to a pugixml element path
-      auto elementPath = path;
+      auto elementPath = itemPath;
       replace_all(elementPath, '.', '/');
-      if (!path.empty()) {
+      if (!itemPath.empty()) {
          elementPath += '/';
       }
-      elementPath += name;
+      elementPath += itemName;
 
       // Find item in the xml document
       auto node = doc.first_element_by_path(elementPath.c_str());
@@ -890,8 +889,7 @@ deleteItems(std::string_view fileSysPath,
          continue;
       }
 
-      // Verify data length
-      auto nodeLength = node.attribute("length").as_uint();
+      // Verify complex data
       if (item->dataType != UCDataType::Complex && !item->data) {
          item->error = UCError::InvalidParam;
          continue;

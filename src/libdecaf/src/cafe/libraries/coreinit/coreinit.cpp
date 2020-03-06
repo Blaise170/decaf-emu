@@ -1,4 +1,3 @@
-#pragma optimize("", off)
 #include "coreinit.h"
 #include "coreinit_alarm.h"
 #include "coreinit_appio.h"
@@ -24,13 +23,13 @@
 #include <common/log.h>
 
 #include "cafe/libraries/cafe_hle.h"
-#include "cafe/cafe_ppc_interface_invoke.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 
 namespace cafe::coreinit
 {
 
 static void
-rpl_entry(/* no args for coreinit entry point */)
+coreinit_entry(/* no args for coreinit entry point */)
 {
    auto coreId = cpu::this_core::id();
 
@@ -80,7 +79,7 @@ rpl_entry(/* no args for coreinit entry point */)
 void
 Library::registerSymbols()
 {
-   RegisterEntryPoint(rpl_entry);
+   RegisterNoCrtEntryPoint(coreinit_entry);
 
    registerAlarmSymbols();
    registerAppIoSymbols();

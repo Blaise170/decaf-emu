@@ -6,11 +6,11 @@
 #include "coreinit_memexpheap.h"
 #include "coreinit_memframeheap.h"
 #include "coreinit_memunitheap.h"
-#include "cafe/cafe_ppc_interface_invoke.h"
+#include "cafe/cafe_ppc_interface_invoke_guest.h"
 
 #include <common/decaf_assert.h>
 #include <common/log.h>
-#include <libcpu/cpu.h>
+#include <libcpu/state.h>
 
 namespace cafe::coreinit
 {

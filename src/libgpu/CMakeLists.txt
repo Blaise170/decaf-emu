@@ -20,6 +20,10 @@ if(DECAF_VULKAN)
 
     include_directories(${GENERATED_BASEPATH})
 
+    if(DECAF_PLATFORM_COCOA)
+        set(SHADER_DEFINES "-DDECAF_MVK_COMPAT")
+    endif()
+
     macro(compile_vulkan_shader OUTFILE INFILE)
         set(BIN2C "${CMAKE_SOURCE_DIR}/libraries/bin2c.cmake")
         set(INPATH "${PROJECT_SOURCE_DIR}/vulkan_shaders/${INFILE}")
@@ -27,7 +31,7 @@ if(DECAF_VULKAN)
         add_custom_command(
             OUTPUT "${OUTPATH}.h" "${OUTPATH}.cpp"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${SHDRBIN_BASEPATH}"
-            COMMAND ${GLSLANG_VALIDATOR} -V -o "${OUTPATH}" "${INPATH}"
+            COMMAND ${GLSLANG_VALIDATOR} -V ${SHADER_DEFINES} -o "${OUTPATH}" "${INPATH}"
             COMMAND ${CMAKE_COMMAND} ARGS "-DOUTPUT_C=${OUTPATH}.cpp" "-DOUTPUT_H=${OUTPATH}.h" "-DINPUT_FILES=${OUTPATH}" -P "${BIN2C}"
             DEPENDS "${INPATH}" "${BIN2C}"
             VERBATIM)
@@ -43,16 +47,16 @@ if(DECAF_VULKAN)
 endif()
 
 add_library(libgpu STATIC ${SOURCE_FILES} ${HEADER_FILES} ${INLINE_FILES} ${VULKANSHADER_FILES} ${VK_BIN_FILES})
-GroupSources(latte)
-GroupSources(src)
-GroupSources(vulkan_shaders)
+GroupSources("Header Files/latte" latte)
+GroupSources("Source Files" src)
+GroupSources("Vulkan Shader Files" vulkan_shaders)
 
 # We have to do this manually as the files don't exist until the first
 # build occurs, which is after the solution is generated.
 if(DECAF_VULKAN)
     if (MSVC)
         add_dependencies(libgpu libgpu-shaders)
-        source_group("vulkan_shaders_bin" FILES ${VK_BIN_FILES})
+        source_group("Generated Files" FILES ${VK_BIN_FILES})
     endif()
 endif()
 
@@ -61,21 +65,38 @@ target_link_libraries(libgpu
     libcpu
     addrlib)
 
-if(DECAF_GL)
-    target_link_libraries(libgpu
-        ${GLBINDING_LIBRARIES}
-        ${OPENGL_LIBRARIES})
+if(DECAF_PLATFORM_XCB)
+    target_link_libraries(libgpu ${XCB_LIBRARY})
+endif()
 
-   if(MSVC)
-       # GLbinding linker warning
-       target_compile_options(libgpu PUBLIC /wd4251)
-   endif()
+if(DECAF_PLATFORM_XLIB)
+    target_link_libraries(libgpu ${X11_X11_LIB})
+endif()
+
+if(DECAF_PLATFORM_WAYLAND)
+    target_link_libraries(libgpu ${WAYLAND_CLIENT_LIBRARIES})
 endif()
 
 if(DECAF_VULKAN)
-    target_link_libraries(libgpu
-        vulkan
-        ${SPIRV_LIBRARIES})
+    target_link_libraries(libgpu vulkan SPIRV)
 endif()
 
-enable_pch(libgpu)
+if(DECAF_PCH)
+    target_precompile_headers(libgpu
+      PRIVATE
+        <common/pch.h>
+        "latte/latte_registers.h"
+        "latte/latte_pm4.h"
+        "latte/latte_pm4_commands.h"
+    )
+
+    if(DECAF_VULKAN)
+        target_precompile_headers(libgpu
+          PRIVATE
+            <common/vulkan_hpp.h>
+            "src/vulkan/vk_mem_alloc_decaf.h"
+        )
+    endif()
+
+    AutoGroupPCHFiles()
+endif()
